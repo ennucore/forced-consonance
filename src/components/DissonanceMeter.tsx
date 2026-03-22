@@ -333,6 +333,7 @@ export default function DissonanceMeter() {
   const [closeness, setCloseness] = createSignal(0.1);
   const [dissOn, setDissOn] = createSignal(true);
   const [mode, setMode] = createSignal<"transport" | "joint">("transport");
+  const [stepsPerSec, setStepsPerSec] = createSignal(8);
 
   let optimizeIntervalId = 0;
 
@@ -342,23 +343,26 @@ export default function DissonanceMeter() {
   let closeMax = 0.001;
   let intervalId: number;
 
-  const OPTIMIZE_INTERVAL = 125; // ~8 steps/sec
+  function runStep() {
+    const current = spectrum();
+    const ref = referenceSpectrum();
+    const dw = dissOn() ? 1 : 0;
+    const updated = mode() === "transport"
+      ? optimizeStepTransport(current, ref, lr(), closeness(), dw)
+      : optimizeStepJoint(current, ref, lr(), closeness(), dw);
+    updateSpectrum(updated);
+  }
+
+  function restartInterval() {
+    clearInterval(optimizeIntervalId);
+    optimizeIntervalId = window.setInterval(runStep, Math.round(1000 / stepsPerSec()));
+  }
 
   function startOptimize() {
     setOptimizing(true);
     setOptimizerActive(true);
     resetAdam();
-
-    optimizeIntervalId = window.setInterval(() => {
-      const current = spectrum();
-      const ref = referenceSpectrum();
-
-      const dw = dissOn() ? 1 : 0;
-      const updated = mode() === "transport"
-        ? optimizeStepTransport(current, ref, lr(), closeness(), dw)
-        : optimizeStepJoint(current, ref, lr(), closeness(), dw);
-      updateSpectrum(updated);
-    }, OPTIMIZE_INTERVAL);
+    restartInterval();
   }
 
   function stopOptimize() {
@@ -506,6 +510,21 @@ export default function DissonanceMeter() {
           <span class="lr-value">
             {mode() === "transport" ? closeness().toFixed(2) : closeness().toFixed(0)}
           </span>
+        </label>
+        <label class="lr-control">
+          hz:
+          <input
+            type="range"
+            min="1"
+            max="30"
+            step="1"
+            value={stepsPerSec()}
+            onInput={(e) => {
+              setStepsPerSec(parseInt(e.currentTarget.value));
+              if (optimizing()) restartInterval();
+            }}
+          />
+          <span class="lr-value">{stepsPerSec()}</span>
         </label>
       </div>
     </div>
