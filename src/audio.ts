@@ -29,80 +29,32 @@ export function getAnalyser(): AnalyserNode {
 // Chord partial construction
 // ---------------------------------------------------------------------------
 
-type RawPartial = { freq: number; amp: number; fundamental: number };
 type RenderedPartial = { freq: number; amp: number };
 
-// Active notes are stored as fundamentals; the overtone stack is rebuilt
-// on every render so preset/editor changes apply immediately.
+// Active notes stored as fundamentals; overtone stack rebuilt on every render
+// so preset/editor changes apply immediately.
 const activeNotes = new Map<string, number>();
 
-export function getActiveFundamentals(): number[] {
-  return Array.from(activeNotes.values());
-}
-
-function rawPartials(fundamentalHz: number, amps: number[]): RawPartial[] {
-  const out: RawPartial[] = [];
-  for (let i = 0; i < amps.length; i++) {
-    const amp = amps[i]!;
-    if (amp === 0) continue;
-    const freq = fundamentalHz * (i + 1);
-    if (freq > 20000) break;
-    out.push({ freq, amp, fundamental: fundamentalHz });
-  }
-  return out;
-}
-
-function minimumSeparationHz(freq: number, windowSemitones: number): number {
-  return freq * (Math.pow(2, windowSemitones / 12) - 1);
-}
-
-function isTooCloseToAcceptedOvertone(
-  candidateFreq: number,
-  acceptedOvertones: number[],
-  windowSemitones: number,
-): boolean {
-  if (windowSemitones <= 0) return false;
-
-  return acceptedOvertones.some((acceptedFreq) => {
-    const threshold = minimumSeparationHz(
-      Math.min(acceptedFreq, candidateFreq),
-      windowSemitones,
-    );
-    return Math.abs(candidateFreq - acceptedFreq) < threshold;
-  });
-}
-
-function buildChordPartials(windowSemitones: number): RenderedPartial[] {
+function buildChordPartials(): RenderedPartial[] {
   const fundamentals = Array.from(activeNotes.values()).sort((a, b) => a - b);
   if (fundamentals.length === 0) return [];
 
   const amps = overtoneAmps();
-  const fundamentalAmp = amps[0] ?? 1;
+  const result: RenderedPartial[] = [];
 
-  const accepted: RenderedPartial[] = fundamentals.map((freq) => ({
-    freq,
-    amp: fundamentalAmp,
-  }));
-  const acceptedOvertones: number[] = [];
-
-  for (let i = 1; i < amps.length; i++) {
+  for (let i = 0; i < amps.length; i++) {
     const amp = amps[i]!;
     if (amp === 0) continue;
-
     const harmonic = i + 1;
+
     for (const fundamental of fundamentals) {
       const freq = fundamental * harmonic;
-      if (freq > 20000) break;
-      if (isTooCloseToAcceptedOvertone(freq, acceptedOvertones, windowSemitones)) {
-        continue;
-      }
-
-      accepted.push({ freq, amp });
-      acceptedOvertones.push(freq);
+      if (freq > 20000) continue;
+      result.push({ freq, amp });
     }
   }
 
-  return accepted;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +62,6 @@ function buildChordPartials(windowSemitones: number): RenderedPartial[] {
 // ---------------------------------------------------------------------------
 
 let rendered: { oscs: OscillatorNode[]; master: GainNode } | null = null;
-let currentWindow = 0;
 
 function renderAll() {
   const audio = getCtx();
@@ -125,7 +76,7 @@ function renderAll() {
     rendered = null;
   }
 
-  const partials = buildChordPartials(currentWindow);
+  const partials = buildChordPartials();
   if (partials.length === 0) return;
 
   const master = audio.createGain();
@@ -153,18 +104,12 @@ function renderAll() {
   rendered = { oscs, master };
 }
 
-export function setConsonanceWindow(windowSemitones: number) {
-  currentWindow = windowSemitones;
-  if (activeNotes.size > 0) renderAll();
-}
-
 export function refreshActiveNotes() {
   if (activeNotes.size > 0) renderAll();
 }
 
-export function noteOn(note: string, freq: number, windowSemitones: number) {
+export function noteOn(note: string, freq: number) {
   if (activeNotes.has(note)) return;
-  currentWindow = windowSemitones;
   activeNotes.set(note, freq);
   renderAll();
 }
@@ -200,7 +145,6 @@ interface Voice {
 function startVoice(freq: number, amps: number[]): Voice {
   const audio = getCtx();
   const now = audio.currentTime;
-  const partials = rawPartials(freq, amps);
 
   const master = audio.createGain();
   master.gain.setValueAtTime(0, now);
@@ -209,15 +153,20 @@ function startVoice(freq: number, amps: number[]): Voice {
 
   const oscillators: OscillatorNode[] = [];
 
-  for (const partial of partials) {
+  for (let i = 0; i < amps.length; i++) {
+    const amp = amps[i]!;
+    if (amp === 0) continue;
+    const freq_ = freq * (i + 1);
+    if (freq_ > 20000) continue;
+
     const osc = audio.createOscillator();
     osc.type = "sine";
-    osc.frequency.value = partial.freq;
+    osc.frequency.value = freq_;
 
     const gain = audio.createGain();
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(partial.amp, now + 0.005);
-    gain.gain.exponentialRampToValueAtTime(partial.amp * 0.6, now + 0.3);
+    gain.gain.linearRampToValueAtTime(amp, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(amp * 0.6, now + 0.3);
 
     osc.connect(gain);
     gain.connect(master);

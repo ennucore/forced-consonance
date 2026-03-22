@@ -1,23 +1,16 @@
 import { createEffect, createSignal, onMount, onCleanup, For } from "solid-js";
 import { buildKeys, buildKeyMap, type PianoKey } from "./keys";
-import {
-  noteOn,
-  noteOff,
-  setConsonanceWindow,
-  refreshActiveNotes,
-} from "./audio";
+import { noteOn, noteOff, refreshActiveNotes } from "./audio";
 import { overtoneAmps } from "./overtones";
 import { OvertoneEditor } from "./components/OvertoneEditor";
 import SpectrumAnalyser from "./components/SpectrumAnalyser";
 import DissonanceCurve from "./components/DissonanceCurve";
-import DissonanceTarget from "./components/DissonanceTarget";
 
 const pianoKeys = buildKeys();
 const keyMap = buildKeyMap(pianoKeys);
 
 export default function App() {
   const [active, setActive] = createSignal<Set<string>>(new Set());
-  const [window_, setWindow] = createSignal(1);
 
   createEffect(() => {
     overtoneAmps();
@@ -25,7 +18,7 @@ export default function App() {
   });
 
   function press(key: PianoKey) {
-    noteOn(key.note, key.freq, window_());
+    noteOn(key.note, key.freq);
     setActive((prev) => new Set(prev).add(key.note));
   }
 
@@ -50,7 +43,6 @@ export default function App() {
   }
 
   onMount(() => {
-    setConsonanceWindow(window_());
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
   });
@@ -75,21 +67,6 @@ export default function App() {
   return (
     <div class="app">
       <h1>forced consonance</h1>
-      <div class="slider-row">
-        <label>overtone spacing: {window_().toFixed(1)} semitones</label>
-        <input
-          type="range"
-          min="0"
-          max="6"
-          step="0.1"
-          value={window_()}
-          onInput={(e) => {
-            const value = parseFloat(e.currentTarget.value);
-            setWindow(value);
-            setConsonanceWindow(value);
-          }}
-        />
-      </div>
       <p class="hint">play with keyboard or click the keys</p>
       <div class="piano">
         <For each={whiteKeys}>
@@ -120,7 +97,6 @@ export default function App() {
       </div>
       <div class="panels-row">
         <OvertoneEditor />
-        <DissonanceTarget />
         <SpectrumAnalyser />
       </div>
       <DissonanceCurve />
