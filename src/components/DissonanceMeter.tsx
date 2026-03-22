@@ -186,10 +186,31 @@ function sinkhornDivergence(a: Float64Array, b: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Optimizer: gradient descent on pool amplitudes
+// Adam optimizer on pool amplitudes
 // ---------------------------------------------------------------------------
+//
+// Adam prevents oscillation: when a parameter's gradient alternates sign
+// (dissonance pushes down, closeness pushes up), momentum averages toward
+// zero and variance grows, automatically shrinking the effective step size
+// for that parameter.
 
 const GRAD_DELTA = 1e-4;
+const ADAM_BETA1 = 0.9;
+const ADAM_BETA2 = 0.999;
+const ADAM_EPS = 1e-8;
+
+// Adam state — reset when optimizer starts or reference changes
+let adamM: Float64Array | null = null;
+let adamV: Float64Array | null = null;
+let adamT = 0;
+let lastRefId = 0; // track reference changes
+
+function resetAdam() {
+  adamM = new Float64Array(SPECTRUM_SIZE);
+  adamV = new Float64Array(SPECTRUM_SIZE);
+  adamT = 0;
+  lastRefId++;
+}
 
 function computeLoss(
   amps: Float64Array,
@@ -208,11 +229,16 @@ function optimizeStep(
   dissWeight: number
 ): Float64Array {
   const n = current.length;
-  const loss = computeLoss(current, ref, closenessWeight, dissWeight);
 
+  // Initialize Adam state if needed
+  if (!adamM || adamM.length !== n) resetAdam();
+
+  adamT++;
+
+  // Compute gradient
+  const loss = computeLoss(current, ref, closenessWeight, dissWeight);
   const grad = new Float64Array(n);
 
-  // Only compute gradients for bins that are active or in the reference
   for (let i = 0; i < n; i++) {
     if (current[i]! < 1e-6 && ref[i]! < 1e-6) continue;
 
@@ -221,10 +247,18 @@ function optimizeStep(
     grad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
   }
 
+  // Adam update
   const result = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    result[i] = Math.max(0, current[i]! - lr * grad[i]!);
+    adamM![i] = ADAM_BETA1 * adamM![i]! + (1 - ADAM_BETA1) * grad[i]!;
+    adamV![i] = ADAM_BETA2 * adamV![i]! + (1 - ADAM_BETA2) * grad[i]! * grad[i]!;
+
+    const mHat = adamM![i]! / (1 - Math.pow(ADAM_BETA1, adamT));
+    const vHat = adamV![i]! / (1 - Math.pow(ADAM_BETA2, adamT));
+
+    result[i] = Math.max(0, current[i]! - lr * mHat / (Math.sqrt(vHat) + ADAM_EPS));
   }
+
   return result;
 }
 
@@ -253,13 +287,25 @@ export default function DissonanceMeter() {
 
   const OPTIMIZE_INTERVAL = 125; // ~8 steps/sec
 
+  let prevRefSnapshot = "";
+
   function startOptimize() {
     setOptimizing(true);
     setOptimizerActive(true);
+    resetAdam();
+    prevRefSnapshot = referenceSpectrum().toString();
 
     optimizeIntervalId = window.setInterval(() => {
       const current = spectrum();
       const ref = referenceSpectrum();
+
+      // Reset Adam if reference changed (new chord)
+      const refSnap = ref.toString();
+      if (refSnap !== prevRefSnapshot) {
+        resetAdam();
+        prevRefSnapshot = refSnap;
+      }
+
       const updated = optimizeStep(current, ref, lr(), closeness(), dissOn() ? 1 : 0);
       updateSpectrum(updated);
     }, OPTIMIZE_INTERVAL);
