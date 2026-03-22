@@ -7,9 +7,10 @@ const keyMap = buildKeyMap(pianoKeys);
 
 export default function App() {
   const [active, setActive] = createSignal<Set<string>>(new Set());
+  const [consonance, setConsonance] = createSignal(true);
 
   function press(key: PianoKey) {
-    noteOn(key.note, key.freq);
+    noteOn(key.note, key.freq, consonance());
     setActive((prev) => new Set(prev).add(key.note));
   }
 
@@ -62,6 +63,12 @@ export default function App() {
   return (
     <div class="app">
       <h1>forced consonance</h1>
+      <button
+        class={`toggle ${consonance() ? "on" : "off"}`}
+        onClick={() => setConsonance((v) => !v)}
+      >
+        forced consonance: {consonance() ? "on" : "off"}
+      </button>
       <p class="hint">play with keyboard or click the keys</p>
       <div class="piano">
         <For each={whiteKeys}>

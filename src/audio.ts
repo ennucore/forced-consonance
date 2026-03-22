@@ -11,14 +11,17 @@ function getCtx(): AudioContext {
 // Deduplicate overtones within 1 semitone of each other
 const OVERTONE_COUNT = 16;
 
-function deduplicateOvertones(
+function buildPartials(
   fundamentalHz: number,
-  count: number
+  count: number,
+  deduplicate: boolean
 ): { freq: number; amp: number }[] {
   const raw: { freq: number; amp: number }[] = [];
   for (let n = 1; n <= count; n++) {
     raw.push({ freq: fundamentalHz * n, amp: 1 / n });
   }
+
+  if (!deduplicate) return raw;
 
   // 1 semitone = ratio of 2^(1/12) ≈ 1.0595
   // Two freqs are within 1 semitone if |log2(a/b)| < 1/12
@@ -43,12 +46,12 @@ interface Voice {
 
 const activeVoices = new Map<string, Voice>();
 
-export function noteOn(note: string, freq: number) {
+export function noteOn(note: string, freq: number, consonance: boolean) {
   if (activeVoices.has(note)) return;
 
   const audio = getCtx();
   const now = audio.currentTime;
-  const partials = deduplicateOvertones(freq, OVERTONE_COUNT);
+  const partials = buildPartials(freq, OVERTONE_COUNT, consonance);
 
   const master = audio.createGain();
   master.gain.setValueAtTime(0, now);

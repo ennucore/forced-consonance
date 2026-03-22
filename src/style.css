@@ -48,6 +48,32 @@ h1 {
   letter-spacing: 0.05em;
 }
 
+.toggle {
+  padding: 8px 18px;
+  border: 1px solid var(--fg-dim);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.toggle.on {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.toggle.off {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.toggle:hover {
+  background: var(--bg-light);
+}
+
 .hint {
   font-size: 0.75rem;
   color: var(--fg-dim);
