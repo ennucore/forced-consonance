@@ -163,7 +163,7 @@ export default function DissonanceMeter() {
   let closeValueEl!: HTMLSpanElement;
 
   const [optimizing, setOptimizing] = createSignal(false);
-  const [lr, setLr] = createSignal(0.001);
+  const [lr, setLr] = createSignal(0.1);
   const [closeness, setCloseness] = createSignal(50);
   const [dissOn, setDissOn] = createSignal(true);
 
