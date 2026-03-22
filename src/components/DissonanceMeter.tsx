@@ -152,9 +152,15 @@ function optimizeStep(
     grad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
   }
 
+  // Normalize gradient to unit length, then scale by lr.
+  // This makes step size independent of gradient magnitude.
+  let gradNorm = 0;
+  for (let i = 0; i < n; i++) gradNorm += grad[i]! * grad[i]!;
+  gradNorm = Math.sqrt(gradNorm) || 1;
+
   const result = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    result[i] = Math.max(0, current[i]! - lr * grad[i]!);
+    result[i] = Math.max(0, current[i]! - lr * grad[i]! / gradNorm);
   }
   return result;
 }
