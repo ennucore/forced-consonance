@@ -89,12 +89,19 @@ function spectrumDissonance(lines: SpectralLine[]): number {
   return total;
 }
 
-// Gaussian-blurred MSE on a semitone grid for closeness regularization.
-// Maps spectral lines (arbitrary Hz) to a semitone grid relative to the
-// lowest frequency, blurs, then compares.
-const GRID_SIZE = 128; // semitones (covers ~10 octaves)
+// ---------------------------------------------------------------------------
+// Wasserstein W1 distance on log-energy spectra
+// ---------------------------------------------------------------------------
+//
+// Maps spectral lines to a log-frequency grid (semitone bins).
+// Energy = amp² * freq (acoustic power: same amplitude at higher pitch
+// carries more energy). Compared in log scale.
+// W1 = ∫ |CDF_a(f) - CDF_b(f)| df, computed on the semitone grid.
 
-function toSemitoneGrid(lines: SpectralLine[], minFreq: number): Float64Array {
+const GRID_SIZE = 128; // semitones (~10 octaves)
+const LOG_ENERGY_EPS = 1e-12;
+
+function toLogEnergyGrid(lines: SpectralLine[], minFreq: number): Float64Array {
   const grid = new Float64Array(GRID_SIZE);
   if (minFreq <= 0) return grid;
   for (const l of lines) {
@@ -102,45 +109,51 @@ function toSemitoneGrid(lines: SpectralLine[], minFreq: number): Float64Array {
     const semitone = 12 * Math.log2(l.freq / minFreq);
     const bin = Math.round(semitone);
     if (bin >= 0 && bin < GRID_SIZE) {
-      grid[bin] += l.amp;
+      // Energy = amp² * freq (pitch-dependent power)
+      grid[bin] += l.amp * l.amp * l.freq;
     }
+  }
+  // Convert to log scale
+  for (let i = 0; i < GRID_SIZE; i++) {
+    grid[i] = Math.log(grid[i]! + LOG_ENERGY_EPS);
   }
   return grid;
 }
 
-function gaussianBlur(grid: Float64Array, sigma: number): Float64Array {
-  const result = new Float64Array(grid.length);
-  const radius = Math.ceil(sigma * 3);
-  for (let i = 0; i < grid.length; i++) {
-    let sum = 0;
-    let wsum = 0;
-    for (let j = -radius; j <= radius; j++) {
-      const idx = i + j;
-      if (idx < 0 || idx >= grid.length) continue;
-      const w = Math.exp(-(j * j) / (2 * sigma * sigma));
-      sum += grid[idx]! * w;
-      wsum += w;
-    }
-    result[i] = sum / wsum;
-  }
-  return result;
-}
-
-function blurredMSE(a: SpectralLine[], b: SpectralLine[]): number {
+function spectralWasserstein(a: SpectralLine[], b: SpectralLine[]): number {
   // Find global min freq for consistent grid
   let minFreq = Infinity;
   for (const l of a) if (l.freq > 0 && l.freq < minFreq) minFreq = l.freq;
   for (const l of b) if (l.freq > 0 && l.freq < minFreq) minFreq = l.freq;
   if (!isFinite(minFreq)) return 0;
 
-  const gridA = gaussianBlur(toSemitoneGrid(a, minFreq), 1);
-  const gridB = gaussianBlur(toSemitoneGrid(b, minFreq), 1);
-  let mse = 0;
+  const gridA = toLogEnergyGrid(a, minFreq);
+  const gridB = toLogEnergyGrid(b, minFreq);
+
+  // Shift both grids so they're non-negative (W1 needs a distribution)
+  let minVal = 0;
   for (let i = 0; i < GRID_SIZE; i++) {
-    const diff = gridA[i]! - gridB[i]!;
-    mse += diff * diff;
+    minVal = Math.min(minVal, gridA[i]!, gridB[i]!);
   }
-  return mse / GRID_SIZE;
+
+  let sumA = 0, sumB = 0;
+  for (let i = 0; i < GRID_SIZE; i++) {
+    gridA[i] = gridA[i]! - minVal;
+    gridB[i] = gridB[i]! - minVal;
+    sumA += gridA[i]!;
+    sumB += gridB[i]!;
+  }
+
+  if (sumA === 0 || sumB === 0) return 0;
+
+  // W1 = sum of |CDF_a - CDF_b| over bins
+  let cdfA = 0, cdfB = 0, dist = 0;
+  for (let i = 0; i < GRID_SIZE; i++) {
+    cdfA += gridA[i]! / sumA;
+    cdfB += gridB[i]! / sumB;
+    dist += Math.abs(cdfA - cdfB);
+  }
+  return dist / GRID_SIZE;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +167,7 @@ function computeLoss(
   ref: SpectralLine[],
   closenessWeight: number
 ): number {
-  return spectrumDissonance(lines) + closenessWeight * blurredMSE(lines, ref);
+  return spectrumDissonance(lines) + closenessWeight * spectralWasserstein(lines, ref);
 }
 
 function optimizeStep(
