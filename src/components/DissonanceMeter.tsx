@@ -1,12 +1,75 @@
 import { onMount, onCleanup } from "solid-js";
-import { overtoneAmps } from "../overtones";
-import { computeChordDissonance } from "../overtones";
-import { getActiveFundamentals } from "../audio";
+import { getAnalyser } from "../audio";
 
 const HISTORY_LEN = 200;
 const WIDTH = 200;
 const HEIGHT = 48;
 const SAMPLE_INTERVAL = 50; // ms
+
+// Sethares roughness kernel (same as overtones.ts)
+const KERNEL_A = 0.0023;
+function kernel(x: number): number {
+  const absx = Math.abs(x);
+  return 50 * absx * Math.exp(-(x * x) / KERNEL_A);
+}
+
+// Minimum amplitude (0-255 scale) to consider a bin significant
+const AMP_THRESHOLD = 8;
+// Only look at frequencies up to this
+const MAX_FREQ = 8000;
+// Peak must be a local maximum within this many bins
+const PEAK_RADIUS = 3;
+
+/**
+ * Extract prominent spectral peaks from FFT data.
+ * Returns array of { freq, amp } (amp normalized 0-1).
+ */
+function extractPeaks(
+  data: Uint8Array,
+  sampleRate: number,
+  fftSize: number
+): { freq: number; amp: number }[] {
+  const binHz = sampleRate / fftSize;
+  const maxBin = Math.min(data.length, Math.floor(MAX_FREQ / binHz));
+  const peaks: { freq: number; amp: number }[] = [];
+
+  for (let i = PEAK_RADIUS; i < maxBin - PEAK_RADIUS; i++) {
+    const val = data[i]!;
+    if (val < AMP_THRESHOLD) continue;
+
+    // Check local maximum
+    let isMax = true;
+    for (let j = 1; j <= PEAK_RADIUS; j++) {
+      if (data[i - j]! >= val || data[i + j]! >= val) {
+        isMax = false;
+        break;
+      }
+    }
+    if (!isMax) continue;
+
+    peaks.push({ freq: i * binHz, amp: val / 255 });
+  }
+
+  return peaks;
+}
+
+/**
+ * Compute dissonance from actual FFT peaks using pairwise Sethares roughness.
+ */
+function spectralDissonance(peaks: { freq: number; amp: number }[]): number {
+  if (peaks.length < 2) return 0;
+
+  let total = 0;
+  for (let i = 0; i < peaks.length; i++) {
+    const pi = peaks[i]!;
+    for (let j = i + 1; j < peaks.length; j++) {
+      const pj = peaks[j]!;
+      const x = pj.freq / pi.freq - 1;
+      total += pi.amp * pj.amp * kernel(x);
+    }
+  }
+  return total;
+}
 
 export default function DissonanceMeter() {
   let canvas!: HTMLCanvasElement;
@@ -18,11 +81,14 @@ export default function DissonanceMeter() {
 
   onMount(() => {
     const ctx = canvas.getContext("2d")!;
+    const analyser = getAnalyser();
+    const data = new Uint8Array(analyser.frequencyBinCount);
 
     intervalId = window.setInterval(() => {
-      const fundamentals = getActiveFundamentals();
-      const amps = overtoneAmps();
-      const d = computeChordDissonance(amps, fundamentals);
+      analyser.getByteFrequencyData(data);
+
+      const peaks = extractPeaks(data, analyser.context.sampleRate, analyser.fftSize);
+      const d = spectralDissonance(peaks);
 
       history.push(d);
       if (history.length > HISTORY_LEN) history.shift();
@@ -33,7 +99,7 @@ export default function DissonanceMeter() {
       maxSeen = Math.max(maxSeen, 0.001);
 
       // Update value display
-      valueEl.textContent = d > 0 ? d.toFixed(2) : "—";
+      valueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Draw sparkline
       ctx.clearRect(0, 0, WIDTH, HEIGHT);
@@ -42,7 +108,6 @@ export default function DissonanceMeter() {
 
       // Fill area
       ctx.beginPath();
-      ctx.moveTo(WIDTH, HEIGHT);
       for (let i = 0; i < history.length; i++) {
         const x = WIDTH - (history.length - 1 - i) * (WIDTH / (HISTORY_LEN - 1));
         const y = HEIGHT - (history[i]! / maxSeen) * (HEIGHT - 4);
@@ -53,10 +118,8 @@ export default function DissonanceMeter() {
           ctx.lineTo(x, y);
         }
       }
-      ctx.lineTo(
-        WIDTH - 0 * (WIDTH / (HISTORY_LEN - 1)),
-        HEIGHT
-      );
+      const lastX = WIDTH;
+      ctx.lineTo(lastX, HEIGHT);
       ctx.closePath();
       ctx.fillStyle = "rgba(255, 97, 136, 0.15)";
       ctx.fill();
