@@ -235,8 +235,12 @@ export function optimizeDissonance(
     }
   }
 
-  // Final: convert back from log, normalize energy
+  // Final: convert back from log, ensure fundamental is loudest, normalize energy
   const finalAmps = theta.map((t) => Math.exp(t));
+  const maxOvertone = Math.max(...finalAmps.slice(1), 0);
+  if (finalAmps[0]! <= maxOvertone) {
+    finalAmps[0] = maxOvertone * 1.2;
+  }
   const finalEnergy = finalAmps.reduce((s, a) => s + a * a, 0);
   const finalScale = finalEnergy > 0 ? Math.sqrt(1 / finalEnergy) : 1;
   return finalAmps.map((a) => Math.max(0, Math.min(1, a * finalScale)));
