@@ -125,6 +125,8 @@ h1 {
   display: flex;
   gap: 16px;
   align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,6 +145,7 @@ h1 {
 .preset-buttons {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .preset-btn {
@@ -256,6 +259,7 @@ h1 {
   align-items: center;
   gap: 8px;
   margin-top: 2px;
+  flex-wrap: wrap;
 }
 
 .optimize-btn {
