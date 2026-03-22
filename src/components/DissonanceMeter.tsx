@@ -329,11 +329,11 @@ export default function DissonanceMeter() {
   let closeValueEl!: HTMLSpanElement;
 
   const [optimizing, setOptimizing] = createSignal(false);
-  const [lr, setLr] = createSignal(0.1);
-  const [closeness, setCloseness] = createSignal(0.1);
+  const [lr, setLr] = createSignal(0.3162);
+  const [closeness, setCloseness] = createSignal(31);
   const [dissOn, setDissOn] = createSignal(true);
-  const [mode, setMode] = createSignal<"transport" | "joint">("transport");
-  const [stepsPerSec, setStepsPerSec] = createSignal(8);
+  const [mode, setMode] = createSignal<"transport" | "joint">("joint");
+  const [stepsPerSec, setStepsPerSec] = createSignal(30);
 
   let optimizeIntervalId = 0;
 
@@ -516,7 +516,7 @@ export default function DissonanceMeter() {
           <input
             type="range"
             min="1"
-            max="30"
+            max="60"
             step="1"
             value={stepsPerSec()}
             onInput={(e) => {
