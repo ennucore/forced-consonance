@@ -173,77 +173,83 @@ export function computeDissonanceCurve(
 }
 
 // ---------------------------------------------------------------------------
-// Dissonance helpers for optimizer
+// FFT spectrum representation
 // ---------------------------------------------------------------------------
 
-/** Dissonance between two complex tones at given frequency ratio */
-function pairDissonance(amps: number[], ratio: number): number {
+const SPEC_BINS = 1024;
+const HZ_PER_BIN = 20; // 0–20480 Hz
+const FALLBACK_FUNDAMENTALS = [220, 220 * 5 / 4, 220 * 3 / 2]; // A3 major triad
+
+/**
+ * Build a frequency spectrum: place overtone energies at their Hz bins
+ * for every active fundamental.
+ */
+function buildSpectrum(
+  amps: number[],
+  fundamentals: number[]
+): Float64Array {
+  const spec = new Float64Array(SPEC_BINS);
+  for (const f0 of fundamentals) {
+    for (let i = 0; i < amps.length; i++) {
+      const a = amps[i]!;
+      if (a === 0) continue;
+      const bin = Math.round((f0 * (i + 1)) / HZ_PER_BIN);
+      if (bin >= 0 && bin < SPEC_BINS) {
+        spec[bin] += a * a; // energy
+      }
+    }
+  }
+  return spec;
+}
+
+/**
+ * Dissonance from the frequency spectrum: sum roughness between all
+ * pairs of occupied bins using the Sethares kernel.
+ */
+function spectralDissonance(spec: Float64Array): number {
+  // Collect non-zero bins
+  const active: { bin: number; energy: number }[] = [];
+  for (let i = 0; i < SPEC_BINS; i++) {
+    if (spec[i]! > 0) active.push({ bin: i, energy: spec[i]! });
+  }
+
   let total = 0;
-  for (let i = 0; i < amps.length; i++) {
-    const wi = amps[i]!;
-    if (wi === 0) continue;
-    const fi = i + 1;
-    for (let j = 0; j < amps.length; j++) {
-      const wj = amps[j]!;
-      if (wj === 0) continue;
-      const fj = (j + 1) * ratio;
-      total += wi * wj * kernel(fj / fi - 1);
+  for (let a = 0; a < active.length; a++) {
+    for (let b = a + 1; b < active.length; b++) {
+      const fa = active[a]!.bin * HZ_PER_BIN;
+      const fb = active[b]!.bin * HZ_PER_BIN;
+      if (fa === 0) continue;
+      const x = fb / fa - 1;
+      // Weight by sqrt of energies (amplitude product)
+      total += Math.sqrt(active[a]!.energy * active[b]!.energy) * kernel(x);
     }
   }
   return total;
 }
 
-const FALLBACK_RATIOS = [6 / 5, 5 / 4, 4 / 3, 3 / 2, 5 / 3];
-
-function averageDissonance(amps: number[], fundamentals: number[]): number {
-  if (fundamentals.length < 2) {
-    let total = 0;
-    for (const r of FALLBACK_RATIOS) total += pairDissonance(amps, r);
-    return total / FALLBACK_RATIOS.length;
-  }
-  let total = 0;
-  let pairs = 0;
-  for (let a = 0; a < fundamentals.length; a++) {
-    for (let b = a + 1; b < fundamentals.length; b++) {
-      const ratio = fundamentals[b]! / fundamentals[a]!;
-      total += pairDissonance(amps, ratio);
-      pairs++;
-    }
-  }
-  return total / pairs;
-}
-
-// ---------------------------------------------------------------------------
-// Wasserstein (Earth Mover's) distance in frequency-energy space
-// ---------------------------------------------------------------------------
-
 /**
- * W1 distance between two amplitude spectra treated as 1D distributions
- * over harmonic bins. Energies (amp^2) are normalized to sum to 1,
- * then W1 = sum of |CDF_a - CDF_b| across bins.
+ * Wasserstein W1 distance between two spectra in frequency space.
+ * Normalizes energy to probability, then sums |CDF_a - CDF_b| * bin_width.
  */
-function wasserstein(a: number[], b: number[]): number {
-  const n = Math.min(a.length, b.length);
-
-  // Use amp^2 as mass (energy)
+function spectralWasserstein(a: Float64Array, b: Float64Array): number {
   let sumA = 0, sumB = 0;
-  for (let i = 0; i < n; i++) {
-    sumA += a[i]! * a[i]!;
-    sumB += b[i]! * b[i]!;
+  for (let i = 0; i < SPEC_BINS; i++) {
+    sumA += a[i]!;
+    sumB += b[i]!;
   }
   if (sumA === 0 || sumB === 0) return 0;
 
   let cdfA = 0, cdfB = 0, dist = 0;
-  for (let i = 0; i < n; i++) {
-    cdfA += (a[i]! * a[i]!) / sumA;
-    cdfB += (b[i]! * b[i]!) / sumB;
+  for (let i = 0; i < SPEC_BINS; i++) {
+    cdfA += a[i]! / sumA;
+    cdfB += b[i]! / sumB;
     dist += Math.abs(cdfA - cdfB);
   }
-  return dist;
+  return dist / SPEC_BINS; // normalize by bin count
 }
 
 // ---------------------------------------------------------------------------
-// Adam optimizer: tune overtone amps to reach a target dissonance
+// Adam optimizer in FFT space
 // ---------------------------------------------------------------------------
 
 const ADAM_STEPS = 20;
@@ -254,7 +260,6 @@ const ADAM_EPS = 1e-8;
 const GRAD_DELTA = 1e-4;
 const WASSERSTEIN_LAMBDA = 0.3;
 
-// Loss history for plotting
 export type LossRecord = {
   total: number;
   dissonance: number;
@@ -263,14 +268,18 @@ export type LossRecord = {
 export const [lossHistory, setLossHistory] = createSignal<LossRecord[]>([]);
 
 function computeLoss(
-  normAmps: number[],
+  amps: number[],
   target: number,
   fundamentals: number[],
-  ref: number[]
+  refAmps: number[]
 ): LossRecord {
-  const d = averageDissonance(normAmps, fundamentals);
+  const spec = buildSpectrum(amps, fundamentals);
+  const refSpec = buildSpectrum(refAmps, fundamentals);
+
+  const d = spectralDissonance(spec);
   const dLoss = (d - target) ** 2;
-  const wLoss = wasserstein(normAmps, ref);
+  const wLoss = spectralWasserstein(spec, refSpec);
+
   return {
     dissonance: dLoss,
     wasserstein: wLoss,
@@ -279,10 +288,9 @@ function computeLoss(
 }
 
 /**
- * Run 20 steps of Adam on log-scale overtone amplitudes to reach
- * targetDissonance while staying close to the reference instrument
- * spectrum (Wasserstein regularization). Total energy is normalized
- * after each step.
+ * Run 20 steps of Adam on log-scale overtone amplitudes.
+ * All losses (dissonance + Wasserstein) are computed in FFT spectrum
+ * space — actual frequency bins with real Hz positions.
  */
 export function optimizeDissonance(
   currentAmps: number[],
@@ -291,27 +299,23 @@ export function optimizeDissonance(
 ): number[] {
   const n = currentAmps.length;
   const ref = referenceAmps();
+  const freqs = fundamentals.length >= 2 ? fundamentals : FALLBACK_FUNDAMENTALS;
 
-  // Work in log space: theta = log(amp + eps)
   const theta = currentAmps.map((a) => Math.log(Math.max(a, 1e-6)));
 
-  // Adam state
   const m = new Float64Array(n);
   const v = new Float64Array(n);
-
   const history: LossRecord[] = [];
 
   for (let step = 0; step < ADAM_STEPS; step++) {
-    // Current amps from theta
     const amps = theta.map((t) => Math.exp(t));
     const energy = amps.reduce((s, a) => s + a * a, 0);
     const scale = energy > 0 ? Math.sqrt(1 / energy) : 1;
     const normAmps = amps.map((a) => a * scale);
 
-    const losses = computeLoss(normAmps, target, fundamentals, ref);
+    const losses = computeLoss(normAmps, target, freqs, ref);
     history.push(losses);
 
-    // Numerical gradient in log space
     const grad = new Float64Array(n);
     for (let i = 0; i < n; i++) {
       const saved = theta[i]!;
@@ -321,13 +325,12 @@ export function optimizeDissonance(
       const pertEnergy = pertAmps.reduce((s, a) => s + a * a, 0);
       const pertScale = pertEnergy > 0 ? Math.sqrt(1 / pertEnergy) : 1;
       const pertNorm = pertAmps.map((a) => a * pertScale);
-      const pertLosses = computeLoss(pertNorm, target, fundamentals, ref);
+      const pertLosses = computeLoss(pertNorm, target, freqs, ref);
 
       grad[i] = (pertLosses.total - losses.total) / GRAD_DELTA;
       theta[i] = saved;
     }
 
-    // Adam update
     const t = step + 1;
     for (let i = 0; i < n; i++) {
       m[i] = ADAM_BETA1 * m[i]! + (1 - ADAM_BETA1) * grad[i]!;
@@ -342,7 +345,6 @@ export function optimizeDissonance(
 
   setLossHistory(history);
 
-  // Final: convert back from log, ensure fundamental is loudest, normalize energy
   const finalAmps = theta.map((t) => Math.exp(t));
   const maxOvertone = Math.max(...finalAmps.slice(1), 0);
   if (finalAmps[0]! <= maxOvertone) {
