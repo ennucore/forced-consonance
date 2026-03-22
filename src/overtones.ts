@@ -105,18 +105,29 @@ function kernel(x: number): number {
   return 50 * absx * Math.exp(-(x * x) / KERNEL_A);
 }
 
+/** Average dissonance across a set of common intervals (P5, M3, P4, etc.) */
+function averageDissonance(amps: number[]): number {
+  const ratios = [6 / 5, 5 / 4, 4 / 3, 3 / 2, 5 / 3];
+  let total = 0;
+  for (const ratio of ratios) {
+    for (let i = 0; i < amps.length; i++) {
+      const wi = amps[i]!;
+      if (wi === 0) continue;
+      const fi = i + 1;
+      for (let j = 0; j < amps.length; j++) {
+        const wj = amps[j]!;
+        if (wj === 0) continue;
+        const fj = (j + 1) * ratio;
+        total += wi * wj * kernel(fj / fi - 1);
+      }
+    }
+  }
+  return total / ratios.length;
+}
+
 /**
  * Compute the Sethares sensory-dissonance curve for a complex tone played
  * against itself transposed by ratio r.
- *
- * For each ratio r in [rMin, rMax], we sum the pairwise roughness between
- * partial i of note A (frequency i) and partial j of note B (frequency j*r),
- * weighted by their amplitudes.
- *
- * @param amps   Amplitude array of length OVERTONE_COUNT (partial n = index+1)
- * @param points Number of sample points across the ratio range
- * @param rMin   Minimum frequency ratio (default 0.5 = one octave below)
- * @param rMax   Maximum frequency ratio (default 2.5)
  */
 export function computeDissonanceCurve(
   amps: number[],
@@ -133,14 +144,13 @@ export function computeDissonanceCurve(
     for (let i = 0; i < amps.length; i++) {
       const wi = amps[i];
       if (wi === 0) continue;
-      const fi = i + 1; // partial frequency (relative to fundamental)
+      const fi = i + 1;
 
       for (let j = 0; j < amps.length; j++) {
         const wj = amps[j];
         if (wj === 0) continue;
-        const fj = (j + 1) * ratio; // partial frequency of transposed note
+        const fj = (j + 1) * ratio;
 
-        // Relative detuning of fj with respect to fi
         const x = fj / fi - 1;
         dissonance += wi * wj * kernel(x);
       }
@@ -150,4 +160,84 @@ export function computeDissonanceCurve(
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Adam optimizer: tune overtone amps to reach a target dissonance
+// ---------------------------------------------------------------------------
+
+const ADAM_STEPS = 20;
+const ADAM_LR = 0.05;
+const ADAM_BETA1 = 0.9;
+const ADAM_BETA2 = 0.999;
+const ADAM_EPS = 1e-8;
+const GRAD_DELTA = 1e-4;
+
+/**
+ * Run 20 steps of Adam on log-scale overtone amplitudes to reach
+ * targetDissonance. Total energy (sum of amp^2) is normalized after
+ * each step to preserve loudness.
+ *
+ * @param currentAmps  Starting amplitudes
+ * @param target       Target dissonance value (0 = pure sine, higher = rougher)
+ * @returns            New amplitude array
+ */
+export function optimizeDissonance(
+  currentAmps: number[],
+  target: number
+): number[] {
+  const n = currentAmps.length;
+
+  // Work in log space: theta = log(amp + eps)
+  const theta = currentAmps.map((a) => Math.log(Math.max(a, 1e-6)));
+
+  // Adam state
+  const m = new Float64Array(n);
+  const v = new Float64Array(n);
+
+  for (let step = 0; step < ADAM_STEPS; step++) {
+    // Current amps from theta
+    const amps = theta.map((t) => Math.exp(t));
+    const energy = amps.reduce((s, a) => s + a * a, 0);
+    const scale = energy > 0 ? Math.sqrt(1 / energy) : 1;
+    const normAmps = amps.map((a) => a * scale);
+
+    const currentD = averageDissonance(normAmps);
+    const loss = (currentD - target) ** 2;
+
+    // Numerical gradient in log space
+    const grad = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const saved = theta[i]!;
+      theta[i] = saved + GRAD_DELTA;
+
+      const pertAmps = theta.map((t) => Math.exp(t));
+      const pertEnergy = pertAmps.reduce((s, a) => s + a * a, 0);
+      const pertScale = pertEnergy > 0 ? Math.sqrt(1 / pertEnergy) : 1;
+      const pertNorm = pertAmps.map((a) => a * pertScale);
+      const pertD = averageDissonance(pertNorm);
+      const pertLoss = (pertD - target) ** 2;
+
+      grad[i] = (pertLoss - loss) / GRAD_DELTA;
+      theta[i] = saved;
+    }
+
+    // Adam update
+    const t = step + 1;
+    for (let i = 0; i < n; i++) {
+      m[i] = ADAM_BETA1 * m[i]! + (1 - ADAM_BETA1) * grad[i]!;
+      v[i] = ADAM_BETA2 * v[i]! + (1 - ADAM_BETA2) * grad[i]! * grad[i]!;
+
+      const mHat = m[i]! / (1 - ADAM_BETA1 ** t);
+      const vHat = v[i]! / (1 - ADAM_BETA2 ** t);
+
+      theta[i] = theta[i]! - ADAM_LR * mHat / (Math.sqrt(vHat) + ADAM_EPS);
+    }
+  }
+
+  // Final: convert back from log, normalize energy
+  const finalAmps = theta.map((t) => Math.exp(t));
+  const finalEnergy = finalAmps.reduce((s, a) => s + a * a, 0);
+  const finalScale = finalEnergy > 0 ? Math.sqrt(1 / finalEnergy) : 1;
+  return finalAmps.map((a) => Math.max(0, Math.min(1, a * finalScale)));
 }
