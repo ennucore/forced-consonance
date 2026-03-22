@@ -97,30 +97,24 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Unnormalized W1 on raw amplitudes for closeness
+// Amplitude MSE for closeness
 // ---------------------------------------------------------------------------
-//
-// dist = Σ |cumsum_a[i] - cumsum_b[i]|
-//
-// Moving a peak costs distance × amplitude (cheap if nearby).
-// Removing/adding amplitude costs amplitude × remaining bins (expensive).
-// No normalization — total amplitude changes ARE penalized.
 
-function unnormalizedW1(a: Float64Array, b: Float64Array): number {
-  let cumA = 0, cumB = 0, dist = 0;
+function ampMSE(a: Float64Array, b: Float64Array): number {
+  let mse = 0;
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    cumA += a[i]!;
-    cumB += b[i]!;
-    dist += Math.abs(cumA - cumB);
+    const diff = a[i]! - b[i]!;
+    mse += diff * diff;
   }
-  return dist / SPECTRUM_SIZE;
+  return mse / SPECTRUM_SIZE;
 }
 
 // ---------------------------------------------------------------------------
-// Optimizer: gradient descent on pool amplitudes
+// Optimizer: gradient descent with blurred gradient for smooth peak sliding
 // ---------------------------------------------------------------------------
 
 const GRAD_DELTA = 1e-4;
+const GRAD_BLUR_SIGMA = 3; // semitones — controls how far peaks "flow"
 
 function computeLoss(
   amps: Float64Array,
@@ -128,7 +122,27 @@ function computeLoss(
   closenessWeight: number,
   dissWeight: number
 ): number {
-  return dissWeight * poolDissonance(amps) + closenessWeight * unnormalizedW1(amps, ref);
+  return dissWeight * poolDissonance(amps) + closenessWeight * ampMSE(amps, ref);
+}
+
+function blurGradient(grad: Float64Array): Float64Array {
+  const n = grad.length;
+  const result = new Float64Array(n);
+  const radius = Math.ceil(GRAD_BLUR_SIGMA * 3);
+
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    let wsum = 0;
+    for (let j = -radius; j <= radius; j++) {
+      const idx = i + j;
+      if (idx < 0 || idx >= n) continue;
+      const w = Math.exp(-(j * j) / (2 * GRAD_BLUR_SIGMA * GRAD_BLUR_SIGMA));
+      sum += grad[idx]! * w;
+      wsum += w;
+    }
+    result[i] = sum / wsum;
+  }
+  return result;
 }
 
 function optimizeStep(
@@ -141,26 +155,23 @@ function optimizeStep(
   const n = current.length;
   const loss = computeLoss(current, ref, closenessWeight, dissWeight);
 
-  const grad = new Float64Array(n);
+  const rawGrad = new Float64Array(n);
 
-  // Only compute gradients for bins that are active or in the reference
+  // Only compute gradients for bins near active or reference regions
   for (let i = 0; i < n; i++) {
     if (current[i]! < 1e-6 && ref[i]! < 1e-6) continue;
 
     const perturbed = new Float64Array(current);
     perturbed[i] += GRAD_DELTA;
-    grad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
+    rawGrad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
   }
 
-  // Normalize gradient to unit length, then scale by lr.
-  // This makes step size independent of gradient magnitude.
-  let gradNorm = 0;
-  for (let i = 0; i < n; i++) gradNorm += grad[i]! * grad[i]!;
-  gradNorm = Math.sqrt(gradNorm) || 1;
+  // Blur gradient so reduce/increase signals flow between bins → peaks slide
+  const grad = blurGradient(rawGrad);
 
   const result = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    result[i] = Math.max(0, current[i]! - lr * grad[i]! / gradNorm);
+    result[i] = Math.max(0, current[i]! - lr * grad[i]!);
   }
   return result;
 }
@@ -263,7 +274,7 @@ export default function DissonanceMeter() {
       dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Closeness (Wasserstein)
-      const w = unnormalizedW1(spectrum(), referenceSpectrum());
+      const w = ampMSE(spectrum(), referenceSpectrum());
       closeHistory.push(w);
       if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
       if (w > closeMax) closeMax = w;
