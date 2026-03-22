@@ -97,7 +97,7 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Amplitude MSE for closeness
+// Amplitude MSE for closeness (no frequency weighting — stable gradients)
 // ---------------------------------------------------------------------------
 
 function ampMSE(a: Float64Array, b: Float64Array): number {
@@ -110,11 +110,10 @@ function ampMSE(a: Float64Array, b: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Optimizer: gradient descent with blurred gradient for smooth peak sliding
+// Optimizer: gradient descent on pool amplitudes
 // ---------------------------------------------------------------------------
 
 const GRAD_DELTA = 1e-4;
-const GRAD_BLUR_SIGMA = 3; // semitones — controls how far peaks "flow"
 
 function computeLoss(
   amps: Float64Array,
@@ -123,26 +122,6 @@ function computeLoss(
   dissWeight: number
 ): number {
   return dissWeight * poolDissonance(amps) + closenessWeight * ampMSE(amps, ref);
-}
-
-function blurGradient(grad: Float64Array): Float64Array {
-  const n = grad.length;
-  const result = new Float64Array(n);
-  const radius = Math.ceil(GRAD_BLUR_SIGMA * 3);
-
-  for (let i = 0; i < n; i++) {
-    let sum = 0;
-    let wsum = 0;
-    for (let j = -radius; j <= radius; j++) {
-      const idx = i + j;
-      if (idx < 0 || idx >= n) continue;
-      const w = Math.exp(-(j * j) / (2 * GRAD_BLUR_SIGMA * GRAD_BLUR_SIGMA));
-      sum += grad[idx]! * w;
-      wsum += w;
-    }
-    result[i] = sum / wsum;
-  }
-  return result;
 }
 
 function optimizeStep(
@@ -155,19 +134,16 @@ function optimizeStep(
   const n = current.length;
   const loss = computeLoss(current, ref, closenessWeight, dissWeight);
 
-  const rawGrad = new Float64Array(n);
+  const grad = new Float64Array(n);
 
-  // Only compute gradients for bins near active or reference regions
+  // Only compute gradients for bins that are active or in the reference
   for (let i = 0; i < n; i++) {
     if (current[i]! < 1e-6 && ref[i]! < 1e-6) continue;
 
     const perturbed = new Float64Array(current);
     perturbed[i] += GRAD_DELTA;
-    rawGrad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
+    grad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
   }
-
-  // Blur gradient so reduce/increase signals flow between bins → peaks slide
-  const grad = blurGradient(rawGrad);
 
   const result = new Float64Array(n);
   for (let i = 0; i < n; i++) {
@@ -187,7 +163,7 @@ export default function DissonanceMeter() {
   let closeValueEl!: HTMLSpanElement;
 
   const [optimizing, setOptimizing] = createSignal(false);
-  const [lr, setLr] = createSignal(0.1);
+  const [lr, setLr] = createSignal(0.001);
   const [closeness, setCloseness] = createSignal(50);
   const [dissOn, setDissOn] = createSignal(true);
 
