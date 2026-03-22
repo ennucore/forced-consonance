@@ -73,6 +73,9 @@ export const [referenceSpectrum, setReferenceSpectrum] = createSignal<Float64Arr
   new Float64Array(POOL_SIZE)
 );
 
+// Dissonance delta — shared so MIDI pitch bend can control it
+export const [dissDelta, setDissDelta] = createSignal(2.5);
+
 // Active notes: name -> { freq, amp (0-1 scaling factor) }
 const activeNotes = new Map<string, { freq: number; amp: number }>();
 

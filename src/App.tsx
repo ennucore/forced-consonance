@@ -1,6 +1,6 @@
 import { createEffect, createSignal, onMount, onCleanup, For } from "solid-js";
 import { buildKeys, buildKeyMap, midiToFreq, midiToNoteName, type PianoKey } from "./keys";
-import { noteOn, noteOff, refreshActiveNotes, scaleNoteAmp } from "./audio";
+import { noteOn, noteOff, refreshActiveNotes, scaleNoteAmp, setDissDelta } from "./audio";
 import { overtoneAmps } from "./overtones";
 import { OvertoneEditor } from "./components/OvertoneEditor";
 import SpectrumAnalyser from "./components/SpectrumAnalyser";
@@ -85,6 +85,18 @@ export default function App() {
     const byte1 = data[1]!;
     const byte2 = data[2]!;
     const cmd = status & 0xf0;
+
+    // Pitch bend → dissonance delta (-5 to 10, center = 2.5)
+    if (cmd === 0xe0) {
+      const bend = (byte2 << 7) | byte1; // 14-bit value: 0–16383, center 8192
+      const normalized = (bend - 8192) / 8192; // -1 to 1
+      // Map: -1 → -5, 0 → 2.5, 1 → 10
+      const delta = normalized >= 0
+        ? 2.5 + normalized * 7.5
+        : 2.5 + normalized * 7.5;
+      setDissDelta(delta);
+      return;
+    }
 
     // Control Change
     if (cmd === 0xb0) {

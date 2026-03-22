@@ -7,6 +7,8 @@ import {
   setOptimizerActive,
   getPoolFreqs,
   SPECTRUM_SIZE,
+  dissDelta,
+  setDissDelta,
 } from "../audio";
 
 const HISTORY_LEN = 200;
@@ -339,11 +341,10 @@ export default function DissonanceMeter() {
 
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.3162);
-  const [closeness, setCloseness] = createSignal(7);
+  const [closeness, setCloseness] = createSignal(15);
   const [dissOn, setDissOn] = createSignal(true);
   const [mode, setMode] = createSignal<"transport" | "joint">("joint");
   const [stepsPerSec, setStepsPerSec] = createSignal(30);
-  const [dissDelta, setDissDelta] = createSignal(2);
 
   let optimizeIntervalId = 0;
 
