@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, createEffect, onCleanup } from "solid-js";
 import {
   overtoneAmps,
   setOvertoneAmps,
@@ -7,23 +7,29 @@ import {
 
 export default function DissonanceTarget() {
   const [target, setTarget] = createSignal(0.5);
-  const [running, setRunning] = createSignal(false);
 
-  function optimize() {
-    setRunning(true);
-    // Defer so the UI updates before the sync computation
-    requestAnimationFrame(() => {
-      const result = optimizeDissonance(overtoneAmps(), target());
-      setOvertoneAmps(result);
-      setRunning(false);
-    });
+  // Continuously run optimize on a loop
+  let rafId = 0;
+
+  function loop() {
+    const result = optimizeDissonance(overtoneAmps(), target());
+    setOvertoneAmps(result);
+    rafId = requestAnimationFrame(loop);
   }
+
+  createEffect(() => {
+    // Re-subscribe whenever target changes
+    target();
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(loop);
+  });
+
+  onCleanup(() => cancelAnimationFrame(rafId));
 
   // Knob drag state
   let knobRef!: HTMLDivElement;
 
   function knobAngle(): number {
-    // Map 0–1 to -135° to 135°
     return -135 + target() * 270;
   }
 
@@ -35,10 +41,6 @@ export default function DissonanceTarget() {
 
     function update(ev: MouseEvent) {
       const angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * (180 / Math.PI);
-      // Map angle to 0–1: -135° = 0, 135° = 1
-      // atan2 gives -180 to 180, with 0 = right
-      // We want: top-left (-135°) = 0, top-right (135°) = 1
-      // Remap: angle + 90 shifts so up = 0°
       let normalized = angle + 90;
       if (normalized < -135) normalized += 360;
       const value = Math.max(0, Math.min(1, (normalized + 135) / 270));
@@ -74,13 +76,6 @@ export default function DissonanceTarget() {
           value={target()}
           onInput={(e) => setTarget(parseFloat(e.currentTarget.value))}
         />
-        <button
-          class="optimize-btn"
-          onClick={optimize}
-          disabled={running()}
-        >
-          {running() ? "..." : "optimize"}
-        </button>
       </div>
     </div>
   );
