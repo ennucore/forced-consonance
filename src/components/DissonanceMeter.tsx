@@ -147,29 +147,30 @@ function blurredMSE(a: SpectralLine[], b: SpectralLine[]): number {
 // Optimizer: gradient descent on spectral line amplitudes
 // ---------------------------------------------------------------------------
 
-const CLOSENESS_WEIGHT = 50;
 const GRAD_DELTA = 1e-4;
 
 function computeLoss(
   lines: SpectralLine[],
-  ref: SpectralLine[]
+  ref: SpectralLine[],
+  closenessWeight: number
 ): number {
-  return spectrumDissonance(lines) + CLOSENESS_WEIGHT * blurredMSE(lines, ref);
+  return spectrumDissonance(lines) + closenessWeight * blurredMSE(lines, ref);
 }
 
 function optimizeStep(
   current: SpectralLine[],
   ref: SpectralLine[],
-  lr: number
+  lr: number,
+  closenessWeight: number
 ): SpectralLine[] {
   const n = current.length;
-  const loss = computeLoss(current, ref);
+  const loss = computeLoss(current, ref, closenessWeight);
 
   const grad = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const perturbed = current.map((l) => ({ ...l }));
     perturbed[i]!.amp += GRAD_DELTA;
-    grad[i] = (computeLoss(perturbed, ref) - loss) / GRAD_DELTA;
+    grad[i] = (computeLoss(perturbed, ref, closenessWeight) - loss) / GRAD_DELTA;
   }
 
   return current.map((l, i) => ({
@@ -188,6 +189,7 @@ export default function DissonanceMeter() {
 
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.01);
+  const [closeness, setCloseness] = createSignal(50);
 
   let optimizeIntervalId = 0;
 
@@ -205,7 +207,7 @@ export default function DissonanceMeter() {
       const ref = referenceSpectrum();
       if (current.length < 2) return;
 
-      const updated = optimizeStep(current, ref, lr());
+      const updated = optimizeStep(current, ref, lr(), closeness());
       updateSpectrum(updated);
     }, OPTIMIZE_INTERVAL);
   }
@@ -226,7 +228,7 @@ export default function DissonanceMeter() {
           const ref = referenceSpectrum();
           if (current.length < 2) return;
 
-          const updated = optimizeStep(current, ref, lr());
+          const updated = optimizeStep(current, ref, lr(), closeness());
           updateSpectrum(updated);
         }, OPTIMIZE_INTERVAL);
       }
@@ -317,6 +319,18 @@ export default function DissonanceMeter() {
             onInput={(e) => setLr(Math.pow(10, parseFloat(e.currentTarget.value)))}
           />
           <span class="lr-value">{lr().toFixed(4)}</span>
+        </label>
+        <label class="lr-control">
+          close:
+          <input
+            type="range"
+            min="0"
+            max="200"
+            step="1"
+            value={closeness()}
+            onInput={(e) => setCloseness(parseFloat(e.currentTarget.value))}
+          />
+          <span class="lr-value">{closeness().toFixed(0)}</span>
         </label>
       </div>
     </div>
