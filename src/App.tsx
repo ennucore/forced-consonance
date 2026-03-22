@@ -43,28 +43,59 @@ export default function App() {
     if (pk) release(pk);
   }
 
+  // Sustain pedal state
+  let pedalDown = false;
+  const sustainedNotes = new Set<string>(); // notes held by pedal after key release
+
+  function releaseNote(name: string) {
+    noteOff(name);
+    setActive((prev) => {
+      const next = new Set(prev);
+      next.delete(name);
+      return next;
+    });
+  }
+
   function handleMidiMessage(e: MIDIMessageEvent) {
     const data = e.data;
     if (!data || data.length < 3) return;
 
     const status = data[0]!;
-    const midiNote = data[1]!;
-    const velocity = data[2]!;
+    const byte1 = data[1]!;
+    const byte2 = data[2]!;
     const cmd = status & 0xf0;
 
-    if (cmd === 0x90 && velocity > 0) {
-      const name = midiToNoteName(midiNote);
-      const freq = midiToFreq(midiNote);
+    // Control Change
+    if (cmd === 0xb0) {
+      // CC 64 = sustain pedal
+      if (byte1 === 64) {
+        if (byte2 >= 64) {
+          pedalDown = true;
+        } else {
+          pedalDown = false;
+          // Release all sustained notes
+          for (const name of sustainedNotes) {
+            releaseNote(name);
+          }
+          sustainedNotes.clear();
+        }
+      }
+      return;
+    }
+
+    if (cmd === 0x90 && byte2 > 0) {
+      const name = midiToNoteName(byte1);
+      const freq = midiToFreq(byte1);
+      sustainedNotes.delete(name); // re-struck while sustained
       noteOn(name, freq);
       setActive((prev) => new Set(prev).add(name));
-    } else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) {
-      const name = midiToNoteName(midiNote);
-      noteOff(name);
-      setActive((prev) => {
-        const next = new Set(prev);
-        next.delete(name);
-        return next;
-      });
+    } else if (cmd === 0x80 || (cmd === 0x90 && byte2 === 0)) {
+      const name = midiToNoteName(byte1);
+      if (pedalDown) {
+        sustainedNotes.add(name);
+      } else {
+        releaseNote(name);
+      }
     }
   }
 
