@@ -133,11 +133,27 @@ function renderSpectrum(lines: SpectralLine[]) {
 }
 
 /**
- * Called by the optimizer to update the spectrum and re-render.
+ * Called by the optimizer to update spectrum amplitudes in-place.
+ * Smoothly ramps existing oscillator gains instead of tearing down
+ * and rebuilding, avoiding crossfade artifacts.
  */
 export function updateSpectrum(lines: SpectralLine[]) {
   setSpectrum(lines);
-  renderSpectrum(lines);
+
+  // If the oscillator count matches, update gains in-place
+  if (rendered && rendered.gains.length === lines.length) {
+    const audio = getCtx();
+    const now = audio.currentTime;
+    for (let i = 0; i < lines.length; i++) {
+      const g = rendered.gains[i]!;
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(g.gain.value, now);
+      g.gain.linearRampToValueAtTime(lines[i]!.amp * 0.6, now + 0.05);
+    }
+  } else {
+    // Structure changed — full rebuild
+    renderSpectrum(lines);
+  }
 }
 
 // ---------------------------------------------------------------------------
