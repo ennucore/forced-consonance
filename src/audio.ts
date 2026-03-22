@@ -1,3 +1,5 @@
+import { overtoneAmps } from "./overtones";
+
 let ctx: AudioContext | null = null;
 
 function getCtx(): AudioContext {
@@ -6,25 +8,46 @@ function getCtx(): AudioContext {
   return ctx;
 }
 
-const OVERTONE_COUNT = 16;
+// ---------------------------------------------------------------------------
+// AnalyserNode
+// ---------------------------------------------------------------------------
 
-// Raw partials per active note, tagged with their fundamental
+let analyser: AnalyserNode | null = null;
+
+export function getAnalyser(): AnalyserNode {
+  const audio = getCtx();
+  if (!analyser) {
+    analyser = audio.createAnalyser();
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0.8;
+    analyser.connect(audio.destination);
+  }
+  return analyser;
+}
+
+// ---------------------------------------------------------------------------
+// Raw partials per note (full harmonic series, never deduped internally)
+// ---------------------------------------------------------------------------
+
 const activeNotes = new Map<string, { freq: number; amp: number; fundamental: number }[]>();
 
-// Currently rendered oscillators
-let rendered: { oscs: OscillatorNode[]; master: GainNode } | null = null;
-
-let currentWindow = 0;
-
-function rawPartials(fundamentalHz: number): { freq: number; amp: number; fundamental: number }[] {
+function rawPartials(fundamentalHz: number, amps: number[]): { freq: number; amp: number; fundamental: number }[] {
   const out: { freq: number; amp: number; fundamental: number }[] = [];
-  for (let n = 1; n <= OVERTONE_COUNT; n++) {
-    const f = fundamentalHz * n;
+  for (let i = 0; i < amps.length; i++) {
+    const a = amps[i]!;
+    if (a === 0) continue;
+    const f = fundamentalHz * (i + 1);
     if (f > 20000) break;
-    out.push({ freq: f, amp: 1 / n, fundamental: fundamentalHz });
+    out.push({ freq: f, amp: a, fundamental: fundamentalHz });
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Cross-note merge: pool all partials across notes, merge only across
+// different fundamentals. Walk from highest frequency down so high overtones
+// merge first. Fundamentals and their octave multiples are never merged.
+// ---------------------------------------------------------------------------
 
 // Check if freq is a power-of-2 multiple (octave) of any active fundamental
 function isOctaveOfFundamental(freq: number): boolean {
@@ -39,9 +62,6 @@ function isOctaveOfFundamental(freq: number): boolean {
   return false;
 }
 
-// Pool all partials across notes, merge only across different fundamentals.
-// Walk from highest frequency down so high overtones merge first.
-// Never merge fundamentals or their power-of-2 (octave) multiples.
 function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number }[] {
   const tagged: { freq: number; amp: number; note: string; protected_: boolean }[] = [];
   for (const [note, partials] of activeNotes) {
@@ -89,6 +109,13 @@ function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number 
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Render all active notes
+// ---------------------------------------------------------------------------
+
+let rendered: { oscs: OscillatorNode[]; master: GainNode } | null = null;
+let currentWindow = 0;
+
 function renderAll() {
   const audio = getCtx();
   const now = audio.currentTime;
@@ -109,7 +136,7 @@ function renderAll() {
   const master = audio.createGain();
   master.gain.setValueAtTime(0, now);
   master.gain.linearRampToValueAtTime(0.25, now + 0.008);
-  master.connect(audio.destination);
+  master.connect(getAnalyser());
 
   const oscs: OscillatorNode[] = [];
 
@@ -131,10 +158,14 @@ function renderAll() {
   rendered = { oscs, master };
 }
 
+// ---------------------------------------------------------------------------
+// Note on/off (piano keyboard)
+// ---------------------------------------------------------------------------
+
 export function noteOn(note: string, freq: number, windowSemitones: number) {
   if (activeNotes.has(note)) return;
   currentWindow = windowSemitones;
-  activeNotes.set(note, rawPartials(freq));
+  activeNotes.set(note, rawPartials(freq, overtoneAmps()));
   renderAll();
 }
 
@@ -143,7 +174,6 @@ export function noteOff(note: string) {
   activeNotes.delete(note);
 
   if (activeNotes.size === 0) {
-    // Fade out everything
     if (rendered) {
       const audio = getCtx();
       const now = audio.currentTime;
@@ -156,4 +186,68 @@ export function noteOff(note: string) {
   } else {
     renderAll();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Interval playback (dissonance curve interaction)
+// ---------------------------------------------------------------------------
+
+interface Voice {
+  oscillators: OscillatorNode[];
+  master: GainNode;
+}
+
+function startVoice(freq: number, amps: number[]): Voice {
+  const audio = getCtx();
+  const now = audio.currentTime;
+  const partials = rawPartials(freq, amps);
+
+  const master = audio.createGain();
+  master.gain.setValueAtTime(0, now);
+  master.gain.linearRampToValueAtTime(0.25, now + 0.02);
+  master.connect(getAnalyser());
+
+  const oscillators: OscillatorNode[] = [];
+
+  for (const p of partials) {
+    const osc = audio.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = p.freq;
+
+    const gain = audio.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(p.amp, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(p.amp * 0.6, now + 0.3);
+
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(now);
+
+    oscillators.push(osc);
+  }
+
+  return { oscillators, master };
+}
+
+let intervalVoices: Voice[] = [];
+
+export function playInterval(baseFreq: number, ratio: number) {
+  stopInterval();
+  const amps = overtoneAmps();
+  intervalVoices = [
+    startVoice(baseFreq, amps),
+    startVoice(baseFreq * ratio, amps),
+  ];
+}
+
+export function stopInterval() {
+  const audio = getCtx();
+  const now = audio.currentTime;
+  for (const voice of intervalVoices) {
+    voice.master.gain.cancelScheduledValues(now);
+    voice.master.gain.setValueAtTime(voice.master.gain.value, now);
+    voice.master.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    for (const osc of voice.oscillators) osc.stop(now + 0.2);
+  }
+  intervalVoices = [];
 }

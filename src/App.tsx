@@ -1,6 +1,9 @@
 import { createSignal, onMount, onCleanup, For } from "solid-js";
 import { buildKeys, buildKeyMap, type PianoKey } from "./keys";
 import { noteOn, noteOff } from "./audio";
+import { OvertoneEditor } from "./components/OvertoneEditor";
+import SpectrumAnalyser from "./components/SpectrumAnalyser";
+import DissonanceCurve from "./components/DissonanceCurve";
 
 const pianoKeys = buildKeys();
 const keyMap = buildKeyMap(pianoKeys);
@@ -51,12 +54,10 @@ export default function App() {
   // Compute black key positions based on their index in the chromatic scale
   function blackKeyOffset(key: PianoKey): number {
     const chromaticIdx = pianoKeys.indexOf(key);
-    // Count white keys before this black key
     let whitesBefore = 0;
     for (let i = 0; i < chromaticIdx; i++) {
       if (pianoKeys[i]!.type === "white") whitesBefore++;
     }
-    // Black key sits between the two adjacent white keys
     return whitesBefore * 52 - 16;
   }
 
@@ -102,6 +103,11 @@ export default function App() {
           )}
         </For>
       </div>
+      <div class="panels-row">
+        <OvertoneEditor />
+        <SpectrumAnalyser />
+      </div>
+      <DissonanceCurve />
     </div>
   );
 }
