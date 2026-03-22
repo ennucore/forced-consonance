@@ -225,12 +225,19 @@ function resetAdam() {
 // Mode A: Transport + dissonance-only Adam (no competing objectives)
 // ---------------------------------------------------------------------------
 
+function dissLoss(amps: Float64Array, targetDiss: number): number {
+  const d = poolDissonance(amps);
+  const diff = d - targetDiss;
+  return diff * diff;
+}
+
 function optimizeStepTransport(
   current: Float64Array,
   ref: Float64Array,
   lr: number,
   transportAlpha: number,
-  dissWeight: number
+  dissWeight: number,
+  targetDiss: number
 ): Float64Array {
   const n = current.length;
 
@@ -243,7 +250,7 @@ function optimizeStepTransport(
   if (!adamM || adamM.length !== n) resetAdam();
   adamT++;
 
-  const baseDiss = poolDissonance(transported);
+  const baseLoss = dissLoss(transported, targetDiss);
   const grad = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
@@ -251,7 +258,7 @@ function optimizeStepTransport(
 
     const perturbed = new Float64Array(transported);
     perturbed[i] += GRAD_DELTA;
-    grad[i] = (poolDissonance(perturbed) - baseDiss) / GRAD_DELTA;
+    grad[i] = (dissLoss(perturbed, targetDiss) - baseLoss) / GRAD_DELTA;
   }
 
   const result = new Float64Array(n);
@@ -276,9 +283,10 @@ function jointLoss(
   amps: Float64Array,
   ref: Float64Array,
   closenessWeight: number,
-  dissWeight: number
+  dissWeight: number,
+  targetDiss: number
 ): number {
-  return dissWeight * poolDissonance(amps) + closenessWeight * ampMSE(amps, ref);
+  return dissWeight * dissLoss(amps, targetDiss) + closenessWeight * ampMSE(amps, ref);
 }
 
 function optimizeStepJoint(
@@ -286,14 +294,15 @@ function optimizeStepJoint(
   ref: Float64Array,
   lr: number,
   closenessWeight: number,
-  dissWeight: number
+  dissWeight: number,
+  targetDiss: number
 ): Float64Array {
   const n = current.length;
 
   if (!adamM || adamM.length !== n) resetAdam();
   adamT++;
 
-  const loss = jointLoss(current, ref, closenessWeight, dissWeight);
+  const loss = jointLoss(current, ref, closenessWeight, dissWeight, targetDiss);
   const grad = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
@@ -301,7 +310,7 @@ function optimizeStepJoint(
 
     const perturbed = new Float64Array(current);
     perturbed[i] += GRAD_DELTA;
-    grad[i] = (jointLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
+    grad[i] = (jointLoss(perturbed, ref, closenessWeight, dissWeight, targetDiss) - loss) / GRAD_DELTA;
   }
 
   const result = new Float64Array(n);
@@ -334,6 +343,7 @@ export default function DissonanceMeter() {
   const [dissOn, setDissOn] = createSignal(true);
   const [mode, setMode] = createSignal<"transport" | "joint">("joint");
   const [stepsPerSec, setStepsPerSec] = createSignal(30);
+  const [dissDelta, setDissDelta] = createSignal(2);
 
   let optimizeIntervalId = 0;
 
@@ -347,9 +357,12 @@ export default function DissonanceMeter() {
     const current = spectrum();
     const ref = referenceSpectrum();
     const dw = dissOn() ? 1 : 0;
+    // Target dissonance = max(0, dissonance(reference) - delta)
+    const refDiss = poolDissonance(ref);
+    const targetDiss = Math.max(0, refDiss - dissDelta());
     const updated = mode() === "transport"
-      ? optimizeStepTransport(current, ref, lr(), closeness(), dw)
-      : optimizeStepJoint(current, ref, lr(), closeness(), dw);
+      ? optimizeStepTransport(current, ref, lr(), closeness(), dw, targetDiss)
+      : optimizeStepJoint(current, ref, lr(), closeness(), dw, targetDiss);
     updateSpectrum(updated);
   }
 
@@ -528,6 +541,18 @@ export default function DissonanceMeter() {
             }}
           />
           <span class="lr-value">{stepsPerSec()}</span>
+        </label>
+        <label class="lr-control">
+          Δd:
+          <input
+            type="range"
+            min="0"
+            max="10"
+            step="0.1"
+            value={dissDelta()}
+            onInput={(e) => setDissDelta(parseFloat(e.currentTarget.value))}
+          />
+          <span class="lr-value">{dissDelta().toFixed(1)}</span>
         </label>
       </div>
     </div>

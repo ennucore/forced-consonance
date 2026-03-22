@@ -82,12 +82,25 @@ const activeNotes = new Map<string, { freq: number; amp: number }>();
 export function scaleNoteAmp(note: string, amp: number) {
   const entry = activeNotes.get(note);
   if (!entry) return;
+  const prevAmp = entry.amp;
   entry.amp = amp;
   updateReference();
-  if (!optimizerActive) {
-    const ref = buildReference();
-    setSpectrum(ref);
-    applySpectrum(ref);
+
+  // Also scale the playing spectrum directly for this note's bins
+  if (prevAmp > 1e-10) {
+    const ratio = amp / prevAmp;
+    const amps = overtoneAmps();
+    const current = spectrum();
+    const updated = new Float64Array(current);
+    for (let i = 0; i < amps.length; i++) {
+      if (amps[i]! === 0) continue;
+      const freq = entry.freq * (i + 1);
+      if (freq > 20000) continue;
+      const idx = nearestPoolIndex(freq);
+      updated[idx] *= ratio;
+    }
+    setSpectrum(updated);
+    applySpectrum(updated);
   }
 }
 
