@@ -4,6 +4,7 @@ import {
   setOvertoneAmps,
   optimizeDissonance,
 } from "../overtones";
+import { getActiveFundamentals } from "../audio";
 
 export default function DissonanceTarget() {
   const [target, setTarget] = createSignal(0.5);
@@ -12,7 +13,7 @@ export default function DissonanceTarget() {
   let rafId = 0;
 
   function loop() {
-    const result = optimizeDissonance(overtoneAmps(), target());
+    const result = optimizeDissonance(overtoneAmps(), target(), getActiveFundamentals());
     setOvertoneAmps(result);
     rafId = requestAnimationFrame(loop);
   }

@@ -105,24 +105,47 @@ function kernel(x: number): number {
   return 50 * absx * Math.exp(-(x * x) / KERNEL_A);
 }
 
-/** Average dissonance across a set of common intervals (P5, M3, P4, etc.) */
-function averageDissonance(amps: number[]): number {
-  const ratios = [6 / 5, 5 / 4, 4 / 3, 3 / 2, 5 / 3];
+/** Dissonance between two complex tones at given frequency ratio */
+function pairDissonance(amps: number[], ratio: number): number {
   let total = 0;
-  for (const ratio of ratios) {
-    for (let i = 0; i < amps.length; i++) {
-      const wi = amps[i]!;
-      if (wi === 0) continue;
-      const fi = i + 1;
-      for (let j = 0; j < amps.length; j++) {
-        const wj = amps[j]!;
-        if (wj === 0) continue;
-        const fj = (j + 1) * ratio;
-        total += wi * wj * kernel(fj / fi - 1);
-      }
+  for (let i = 0; i < amps.length; i++) {
+    const wi = amps[i]!;
+    if (wi === 0) continue;
+    const fi = i + 1;
+    for (let j = 0; j < amps.length; j++) {
+      const wj = amps[j]!;
+      if (wj === 0) continue;
+      const fj = (j + 1) * ratio;
+      total += wi * wj * kernel(fj / fi - 1);
     }
   }
-  return total / ratios.length;
+  return total;
+}
+
+const FALLBACK_RATIOS = [6 / 5, 5 / 4, 4 / 3, 3 / 2, 5 / 3];
+
+/**
+ * Compute average dissonance using the currently played fundamentals.
+ * Falls back to common intervals when fewer than 2 notes are held.
+ */
+function averageDissonance(amps: number[], fundamentals: number[]): number {
+  if (fundamentals.length < 2) {
+    let total = 0;
+    for (const r of FALLBACK_RATIOS) total += pairDissonance(amps, r);
+    return total / FALLBACK_RATIOS.length;
+  }
+
+  // Compute dissonance for every unique pair of active fundamentals
+  let total = 0;
+  let pairs = 0;
+  for (let a = 0; a < fundamentals.length; a++) {
+    for (let b = a + 1; b < fundamentals.length; b++) {
+      const ratio = fundamentals[b]! / fundamentals[a]!;
+      total += pairDissonance(amps, ratio);
+      pairs++;
+    }
+  }
+  return total / pairs;
 }
 
 /**
@@ -184,7 +207,8 @@ const GRAD_DELTA = 1e-4;
  */
 export function optimizeDissonance(
   currentAmps: number[],
-  target: number
+  target: number,
+  fundamentals: number[] = []
 ): number[] {
   const n = currentAmps.length;
 
@@ -202,7 +226,7 @@ export function optimizeDissonance(
     const scale = energy > 0 ? Math.sqrt(1 / energy) : 1;
     const normAmps = amps.map((a) => a * scale);
 
-    const currentD = averageDissonance(normAmps);
+    const currentD = averageDissonance(normAmps, fundamentals);
     const loss = (currentD - target) ** 2;
 
     // Numerical gradient in log space
@@ -215,7 +239,7 @@ export function optimizeDissonance(
       const pertEnergy = pertAmps.reduce((s, a) => s + a * a, 0);
       const pertScale = pertEnergy > 0 ? Math.sqrt(1 / pertEnergy) : 1;
       const pertNorm = pertAmps.map((a) => a * pertScale);
-      const pertD = averageDissonance(pertNorm);
+      const pertD = averageDissonance(pertNorm, fundamentals);
       const pertLoss = (pertD - target) ** 2;
 
       grad[i] = (pertLoss - loss) / GRAD_DELTA;

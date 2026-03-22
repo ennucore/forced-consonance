@@ -36,6 +36,10 @@ type RenderedPartial = { freq: number; amp: number };
 // on every render so preset/editor changes apply immediately.
 const activeNotes = new Map<string, number>();
 
+export function getActiveFundamentals(): number[] {
+  return Array.from(activeNotes.values());
+}
+
 function rawPartials(fundamentalHz: number, amps: number[]): RawPartial[] {
   const out: RawPartial[] = [];
   for (let i = 0; i < amps.length; i++) {
