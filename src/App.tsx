@@ -6,6 +6,8 @@ import { OvertoneEditor } from "./components/OvertoneEditor";
 import SpectrumAnalyser from "./components/SpectrumAnalyser";
 import DissonanceCurve from "./components/DissonanceCurve";
 import DissonanceMeter from "./components/DissonanceMeter";
+import DissonanceTarget from "./components/DissonanceTarget";
+import LossCurve from "./components/LossCurve";
 
 const pianoKeys = buildKeys();
 const keyMap = buildKeyMap(pianoKeys);
@@ -99,6 +101,8 @@ export default function App() {
       <div class="panels-row">
         <OvertoneEditor />
         <DissonanceMeter />
+        <DissonanceTarget />
+        <LossCurve />
         <SpectrumAnalyser />
       </div>
       <DissonanceCurve />

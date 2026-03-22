@@ -65,31 +65,29 @@ function pianoAmps(): number[] {
 export const [overtoneAmps, setOvertoneAmps] =
   createSignal<number[]>(sawtoothAmps());
 
+// Reference spectrum: the instrument preset we want to stay close to
+export const [referenceAmps, setReferenceAmps] =
+  createSignal<number[]>(sawtoothAmps());
+
 // ---------------------------------------------------------------------------
 // Preset application
 // ---------------------------------------------------------------------------
 
-export function applyPreset(preset: WaveformPreset): void {
+function getPresetAmps(preset: WaveformPreset): number[] {
   switch (preset) {
-    case "sine":
-      setOvertoneAmps(sineAmps());
-      break;
-    case "sawtooth":
-      setOvertoneAmps(sawtoothAmps());
-      break;
-    case "square":
-      setOvertoneAmps(squareAmps());
-      break;
-    case "triangle":
-      setOvertoneAmps(triangleAmps());
-      break;
-    case "string":
-      setOvertoneAmps(stringAmps());
-      break;
-    case "piano":
-      setOvertoneAmps(pianoAmps());
-      break;
+    case "sine": return sineAmps();
+    case "sawtooth": return sawtoothAmps();
+    case "square": return squareAmps();
+    case "triangle": return triangleAmps();
+    case "string": return stringAmps();
+    case "piano": return pianoAmps();
   }
+}
+
+export function applyPreset(preset: WaveformPreset): void {
+  const amps = getPresetAmps(preset);
+  setOvertoneAmps(amps);
+  setReferenceAmps(amps);
 }
 
 // ---------------------------------------------------------------------------
@@ -174,3 +172,183 @@ export function computeDissonanceCurve(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Dissonance helpers for optimizer
+// ---------------------------------------------------------------------------
+
+/** Dissonance between two complex tones at given frequency ratio */
+function pairDissonance(amps: number[], ratio: number): number {
+  let total = 0;
+  for (let i = 0; i < amps.length; i++) {
+    const wi = amps[i]!;
+    if (wi === 0) continue;
+    const fi = i + 1;
+    for (let j = 0; j < amps.length; j++) {
+      const wj = amps[j]!;
+      if (wj === 0) continue;
+      const fj = (j + 1) * ratio;
+      total += wi * wj * kernel(fj / fi - 1);
+    }
+  }
+  return total;
+}
+
+const FALLBACK_RATIOS = [6 / 5, 5 / 4, 4 / 3, 3 / 2, 5 / 3];
+
+function averageDissonance(amps: number[], fundamentals: number[]): number {
+  if (fundamentals.length < 2) {
+    let total = 0;
+    for (const r of FALLBACK_RATIOS) total += pairDissonance(amps, r);
+    return total / FALLBACK_RATIOS.length;
+  }
+  let total = 0;
+  let pairs = 0;
+  for (let a = 0; a < fundamentals.length; a++) {
+    for (let b = a + 1; b < fundamentals.length; b++) {
+      const ratio = fundamentals[b]! / fundamentals[a]!;
+      total += pairDissonance(amps, ratio);
+      pairs++;
+    }
+  }
+  return total / pairs;
+}
+
+// ---------------------------------------------------------------------------
+// Wasserstein (Earth Mover's) distance in frequency-energy space
+// ---------------------------------------------------------------------------
+
+/**
+ * W1 distance between two amplitude spectra treated as 1D distributions
+ * over harmonic bins. Energies (amp^2) are normalized to sum to 1,
+ * then W1 = sum of |CDF_a - CDF_b| across bins.
+ */
+function wasserstein(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+
+  // Use amp^2 as mass (energy)
+  let sumA = 0, sumB = 0;
+  for (let i = 0; i < n; i++) {
+    sumA += a[i]! * a[i]!;
+    sumB += b[i]! * b[i]!;
+  }
+  if (sumA === 0 || sumB === 0) return 0;
+
+  let cdfA = 0, cdfB = 0, dist = 0;
+  for (let i = 0; i < n; i++) {
+    cdfA += (a[i]! * a[i]!) / sumA;
+    cdfB += (b[i]! * b[i]!) / sumB;
+    dist += Math.abs(cdfA - cdfB);
+  }
+  return dist;
+}
+
+// ---------------------------------------------------------------------------
+// Adam optimizer: tune overtone amps to reach a target dissonance
+// ---------------------------------------------------------------------------
+
+const ADAM_STEPS = 20;
+const ADAM_LR = 0.05;
+const ADAM_BETA1 = 0.9;
+const ADAM_BETA2 = 0.999;
+const ADAM_EPS = 1e-8;
+const GRAD_DELTA = 1e-4;
+const WASSERSTEIN_LAMBDA = 0.3;
+
+// Loss history for plotting
+export type LossRecord = {
+  total: number;
+  dissonance: number;
+  wasserstein: number;
+};
+export const [lossHistory, setLossHistory] = createSignal<LossRecord[]>([]);
+
+function computeLoss(
+  normAmps: number[],
+  target: number,
+  fundamentals: number[],
+  ref: number[]
+): LossRecord {
+  const d = averageDissonance(normAmps, fundamentals);
+  const dLoss = (d - target) ** 2;
+  const wLoss = wasserstein(normAmps, ref);
+  return {
+    dissonance: dLoss,
+    wasserstein: wLoss,
+    total: dLoss + WASSERSTEIN_LAMBDA * wLoss,
+  };
+}
+
+/**
+ * Run 20 steps of Adam on log-scale overtone amplitudes to reach
+ * targetDissonance while staying close to the reference instrument
+ * spectrum (Wasserstein regularization). Total energy is normalized
+ * after each step.
+ */
+export function optimizeDissonance(
+  currentAmps: number[],
+  target: number,
+  fundamentals: number[] = []
+): number[] {
+  const n = currentAmps.length;
+  const ref = referenceAmps();
+
+  // Work in log space: theta = log(amp + eps)
+  const theta = currentAmps.map((a) => Math.log(Math.max(a, 1e-6)));
+
+  // Adam state
+  const m = new Float64Array(n);
+  const v = new Float64Array(n);
+
+  const history: LossRecord[] = [];
+
+  for (let step = 0; step < ADAM_STEPS; step++) {
+    // Current amps from theta
+    const amps = theta.map((t) => Math.exp(t));
+    const energy = amps.reduce((s, a) => s + a * a, 0);
+    const scale = energy > 0 ? Math.sqrt(1 / energy) : 1;
+    const normAmps = amps.map((a) => a * scale);
+
+    const losses = computeLoss(normAmps, target, fundamentals, ref);
+    history.push(losses);
+
+    // Numerical gradient in log space
+    const grad = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const saved = theta[i]!;
+      theta[i] = saved + GRAD_DELTA;
+
+      const pertAmps = theta.map((t) => Math.exp(t));
+      const pertEnergy = pertAmps.reduce((s, a) => s + a * a, 0);
+      const pertScale = pertEnergy > 0 ? Math.sqrt(1 / pertEnergy) : 1;
+      const pertNorm = pertAmps.map((a) => a * pertScale);
+      const pertLosses = computeLoss(pertNorm, target, fundamentals, ref);
+
+      grad[i] = (pertLosses.total - losses.total) / GRAD_DELTA;
+      theta[i] = saved;
+    }
+
+    // Adam update
+    const t = step + 1;
+    for (let i = 0; i < n; i++) {
+      m[i] = ADAM_BETA1 * m[i]! + (1 - ADAM_BETA1) * grad[i]!;
+      v[i] = ADAM_BETA2 * v[i]! + (1 - ADAM_BETA2) * grad[i]! * grad[i]!;
+
+      const mHat = m[i]! / (1 - ADAM_BETA1 ** t);
+      const vHat = v[i]! / (1 - ADAM_BETA2 ** t);
+
+      theta[i] = theta[i]! - ADAM_LR * mHat / (Math.sqrt(vHat) + ADAM_EPS);
+    }
+  }
+
+  setLossHistory(history);
+
+  // Final: convert back from log, ensure fundamental is loudest, normalize energy
+  const finalAmps = theta.map((t) => Math.exp(t));
+  const maxOvertone = Math.max(...finalAmps.slice(1), 0);
+  if (finalAmps[0]! <= maxOvertone) {
+    finalAmps[0] = maxOvertone * 1.2;
+  }
+  const finalEnergy = finalAmps.reduce((s, a) => s + a * a, 0);
+  const finalScale = finalEnergy > 0 ? Math.sqrt(1 / finalEnergy) : 1;
+  return finalAmps.map((a) => Math.max(0, Math.min(1, a * finalScale)));
+}
