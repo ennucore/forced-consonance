@@ -10,8 +10,14 @@ const NOTE_NAMES = [
   "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
 
-function midiToFreq(midi: number): number {
+export function midiToFreq(midi: number): number {
   return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+export function midiToNoteName(midi: number): string {
+  const octave = Math.floor(midi / 12) - 1;
+  const name = NOTE_NAMES[midi % 12]!;
+  return `${name}${octave}`;
 }
 
 // Keyboard layout: bottom row = white keys, top row = black keys
