@@ -179,7 +179,7 @@ export default function DissonanceMeter() {
   let intervalId: number;
 
   // Throttle optimization to ~5 steps/sec so audio crossfades settle
-  const OPTIMIZE_INTERVAL = 200;
+  const OPTIMIZE_INTERVAL = 50;
 
   function startOptimize() {
     originalAmps = [...overtoneAmps()];
@@ -281,7 +281,7 @@ export default function DissonanceMeter() {
           <input
             type="range"
             min="-4"
-            max="-1"
+            max="0"
             step="0.1"
             value={Math.log10(lr())}
             onInput={(e) => setLr(Math.pow(10, parseFloat(e.currentTarget.value)))}
