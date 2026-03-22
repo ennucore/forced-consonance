@@ -48,30 +48,44 @@ h1 {
   letter-spacing: 0.05em;
 }
 
-.toggle {
-  padding: 8px 18px;
-  border: 1px solid var(--fg-dim);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  font-family: inherit;
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.slider-row label {
   font-size: 0.85rem;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-}
-
-.toggle.on {
-  border-color: var(--green);
   color: var(--green);
+  min-width: 180px;
 }
 
-.toggle.off {
-  border-color: var(--red);
-  color: var(--red);
-}
-
-.toggle:hover {
+.slider-row input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 180px;
+  height: 6px;
   background: var(--bg-light);
+  border-radius: 3px;
+  outline: none;
+}
+
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--purple);
+  cursor: pointer;
+}
+
+.slider-row input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--purple);
+  cursor: pointer;
+  border: none;
 }
 
 .hint {

@@ -7,10 +7,10 @@ const keyMap = buildKeyMap(pianoKeys);
 
 export default function App() {
   const [active, setActive] = createSignal<Set<string>>(new Set());
-  const [consonance, setConsonance] = createSignal(true);
+  const [window_, setWindow] = createSignal(1);
 
   function press(key: PianoKey) {
-    noteOn(key.note, key.freq, consonance());
+    noteOn(key.note, key.freq, window_());
     setActive((prev) => new Set(prev).add(key.note));
   }
 
@@ -63,12 +63,17 @@ export default function App() {
   return (
     <div class="app">
       <h1>forced consonance</h1>
-      <button
-        class={`toggle ${consonance() ? "on" : "off"}`}
-        onClick={() => setConsonance((v) => !v)}
-      >
-        forced consonance: {consonance() ? "on" : "off"}
-      </button>
+      <div class="slider-row">
+        <label>dedup window: {window_().toFixed(1)} semitones</label>
+        <input
+          type="range"
+          min="0"
+          max="6"
+          step="0.1"
+          value={window_()}
+          onInput={(e) => setWindow(parseFloat(e.currentTarget.value))}
+        />
+      </div>
       <p class="hint">play with keyboard or click the keys</p>
       <div class="piano">
         <For each={whiteKeys}>

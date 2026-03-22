@@ -14,22 +14,20 @@ const OVERTONE_COUNT = 16;
 function buildPartials(
   fundamentalHz: number,
   count: number,
-  deduplicate: boolean
+  windowSemitones: number
 ): { freq: number; amp: number }[] {
   const raw: { freq: number; amp: number }[] = [];
   for (let n = 1; n <= count; n++) {
     raw.push({ freq: fundamentalHz * n, amp: 1 / n });
   }
 
-  if (!deduplicate) return raw;
+  if (windowSemitones <= 0) return raw;
 
-  // 1 semitone = ratio of 2^(1/12) ≈ 1.0595
-  // Two freqs are within 1 semitone if |log2(a/b)| < 1/12
   const kept: { freq: number; amp: number }[] = [];
   for (const partial of raw) {
     const tooClose = kept.some((k) => {
       const ratio = Math.abs(Math.log2(partial.freq / k.freq));
-      return ratio < 1 / 12;
+      return ratio < windowSemitones / 12;
     });
     if (!tooClose) {
       kept.push(partial);
@@ -46,12 +44,12 @@ interface Voice {
 
 const activeVoices = new Map<string, Voice>();
 
-export function noteOn(note: string, freq: number, consonance: boolean) {
+export function noteOn(note: string, freq: number, windowSemitones: number) {
   if (activeVoices.has(note)) return;
 
   const audio = getCtx();
   const now = audio.currentTime;
-  const partials = buildPartials(freq, OVERTONE_COUNT, consonance);
+  const partials = buildPartials(freq, OVERTONE_COUNT, windowSemitones);
 
   const master = audio.createGain();
   master.gain.setValueAtTime(0, now);
