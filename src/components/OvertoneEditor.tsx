@@ -7,7 +7,7 @@ import {
   applyPreset,
 } from "../overtones";
 
-const PRESETS: WaveformPreset[] = ["sine", "sawtooth", "square", "triangle"];
+const PRESETS: WaveformPreset[] = ["sine", "sawtooth", "square", "triangle", "string", "piano"];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));

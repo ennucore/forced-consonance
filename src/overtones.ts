@@ -10,7 +10,7 @@ export const OVERTONE_COUNT = 16;
 // Waveform presets
 // ---------------------------------------------------------------------------
 
-export type WaveformPreset = "sawtooth" | "sine" | "square" | "triangle";
+export type WaveformPreset = "sawtooth" | "sine" | "square" | "triangle" | "string" | "piano";
 
 function sawtoothAmps(): number[] {
   return Array.from({ length: OVERTONE_COUNT }, (_, i) => 1 / (i + 1));
@@ -32,6 +32,30 @@ function triangleAmps(): number[] {
     const n = i + 1;
     return n % 2 === 1 ? 1 / (n * n) : 0;
   });
+}
+
+// Plucked string: sin(n*pi*p) / n^2 where p ≈ 0.2 (pluck at 1/5 of string)
+// Naturally suppresses every 5th harmonic, gives a warm guitar-like tone
+function stringAmps(): number[] {
+  const p = 0.2;
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    return Math.abs(Math.sin(n * Math.PI * p)) / (n * n);
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => a / max);
+}
+
+// Piano: hammer strike at p ≈ 1/7 of string, with exponential damping
+// Suppresses 7th harmonic and multiples, higher partials decay faster
+function pianoAmps(): number[] {
+  const p = 1 / 7;
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    return (Math.abs(Math.sin(n * Math.PI * p)) / n) * Math.exp(-0.04 * n * n);
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => a / max);
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +82,12 @@ export function applyPreset(preset: WaveformPreset): void {
       break;
     case "triangle":
       setOvertoneAmps(triangleAmps());
+      break;
+    case "string":
+      setOvertoneAmps(stringAmps());
+      break;
+    case "piano":
+      setOvertoneAmps(pianoAmps());
       break;
   }
 }
