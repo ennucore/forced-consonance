@@ -8,31 +8,45 @@ function getCtx(): AudioContext {
 
 const OVERTONE_COUNT = 16;
 
-// Raw partials per active note (full harmonic series, never deduped internally)
-const activeNotes = new Map<string, { freq: number; amp: number }[]>();
+// Raw partials per active note, tagged with their fundamental
+const activeNotes = new Map<string, { freq: number; amp: number; fundamental: number }[]>();
 
 // Currently rendered oscillators
 let rendered: { oscs: OscillatorNode[]; master: GainNode } | null = null;
 
 let currentWindow = 0;
 
-function rawPartials(fundamentalHz: number): { freq: number; amp: number }[] {
-  const out: { freq: number; amp: number }[] = [];
+function rawPartials(fundamentalHz: number): { freq: number; amp: number; fundamental: number }[] {
+  const out: { freq: number; amp: number; fundamental: number }[] = [];
   for (let n = 1; n <= OVERTONE_COUNT; n++) {
     const f = fundamentalHz * n;
     if (f > 20000) break;
-    out.push({ freq: f, amp: 1 / n });
+    out.push({ freq: f, amp: 1 / n, fundamental: fundamentalHz });
   }
   return out;
 }
 
+// Check if freq is a power-of-2 multiple (octave) of any active fundamental
+function isOctaveOfFundamental(freq: number): boolean {
+  for (const partials of activeNotes.values()) {
+    const f0 = partials[0]?.fundamental;
+    if (!f0) continue;
+    const ratio = freq / f0;
+    if (ratio >= 1 && Math.abs(Math.log2(ratio) - Math.round(Math.log2(ratio))) < 0.01) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Pool all partials across notes, merge only across different fundamentals.
 // Walk from highest frequency down so high overtones merge first.
+// Never merge fundamentals or their power-of-2 (octave) multiples.
 function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number }[] {
-  const tagged: { freq: number; amp: number; note: string }[] = [];
+  const tagged: { freq: number; amp: number; note: string; protected_: boolean }[] = [];
   for (const [note, partials] of activeNotes) {
     for (const p of partials) {
-      tagged.push({ ...p, note });
+      tagged.push({ freq: p.freq, amp: p.amp, note, protected_: isOctaveOfFundamental(p.freq) });
     }
   }
 
@@ -50,6 +64,12 @@ function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number 
     if (used.has(i)) continue;
     used.add(i);
 
+    // Protected partials never merge
+    if (tagged[i]!.protected_) {
+      result.push({ freq: tagged[i]!.freq, amp: tagged[i]!.amp });
+      continue;
+    }
+
     const group = [tagged[i]!];
     const notes = new Set([tagged[i]!.note]);
 
@@ -57,7 +77,8 @@ function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number 
       if (used.has(j)) continue;
       const c = tagged[j]!;
 
-      // Don't merge partials from the same fundamental
+      // Don't merge protected partials or partials from the same fundamental
+      if (c.protected_) continue;
       if (notes.has(c.note)) continue;
 
       const tAmp = group.reduce((s, g) => s + g.amp, 0);
