@@ -97,40 +97,21 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Wasserstein W1 on energy for closeness
+// Energy MSE for closeness (unnormalized — penalizes total energy changes)
 // ---------------------------------------------------------------------------
 
-function toEnergy(amps: Float64Array): Float64Array {
+function energyMSE(a: Float64Array, b: Float64Array): number {
   const freqs = getPoolFreqs();
-  const grid = new Float64Array(SPECTRUM_SIZE);
+  let mse = 0;
+  let count = 0;
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    grid[i] = amps[i]! * amps[i]! * freqs[i]!;
+    const eA = a[i]! * a[i]! * freqs[i]!;
+    const eB = b[i]! * b[i]! * freqs[i]!;
+    const diff = eA - eB;
+    mse += diff * diff;
+    count++;
   }
-  return grid;
-}
-
-function wasserstein(a: Float64Array, b: Float64Array): number {
-  const eA = toEnergy(a);
-  const eB = toEnergy(b);
-
-  let sumA = 0, sumB = 0;
-  for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    sumA += eA[i]!;
-    sumB += eB[i]!;
-  }
-
-  if (sumA === 0 && sumB === 0) return 0;
-  // If one is all zeros, use the other's sum as normalizer
-  if (sumA === 0) sumA = sumB;
-  if (sumB === 0) sumB = sumA;
-
-  let cdfA = 0, cdfB = 0, dist = 0;
-  for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    cdfA += eA[i]! / sumA;
-    cdfB += eB[i]! / sumB;
-    dist += Math.abs(cdfA - cdfB);
-  }
-  return dist / SPECTRUM_SIZE;
+  return mse / count;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +125,7 @@ function computeLoss(
   ref: Float64Array,
   closenessWeight: number
 ): number {
-  return poolDissonance(amps) + closenessWeight * wasserstein(amps, ref);
+  return poolDissonance(amps) + closenessWeight * energyMSE(amps, ref);
 }
 
 function optimizeStep(
@@ -271,7 +252,7 @@ export default function DissonanceMeter() {
       dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Closeness (Wasserstein)
-      const w = wasserstein(spectrum(), referenceSpectrum());
+      const w = energyMSE(spectrum(), referenceSpectrum());
       closeHistory.push(w);
       if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
       if (w > closeMax) closeMax = w;
