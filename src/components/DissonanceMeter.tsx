@@ -123,19 +123,21 @@ const GRAD_DELTA = 1e-4;
 function computeLoss(
   amps: Float64Array,
   ref: Float64Array,
-  closenessWeight: number
+  closenessWeight: number,
+  dissWeight: number
 ): number {
-  return poolDissonance(amps) + closenessWeight * energyMSE(amps, ref);
+  return dissWeight * poolDissonance(amps) + closenessWeight * energyMSE(amps, ref);
 }
 
 function optimizeStep(
   current: Float64Array,
   ref: Float64Array,
   lr: number,
-  closenessWeight: number
+  closenessWeight: number,
+  dissWeight: number
 ): Float64Array {
   const n = current.length;
-  const loss = computeLoss(current, ref, closenessWeight);
+  const loss = computeLoss(current, ref, closenessWeight, dissWeight);
 
   const grad = new Float64Array(n);
 
@@ -145,7 +147,7 @@ function optimizeStep(
 
     const perturbed = new Float64Array(current);
     perturbed[i] += GRAD_DELTA;
-    grad[i] = (computeLoss(perturbed, ref, closenessWeight) - loss) / GRAD_DELTA;
+    grad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
   }
 
   const result = new Float64Array(n);
@@ -168,6 +170,7 @@ export default function DissonanceMeter() {
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.01);
   const [closeness, setCloseness] = createSignal(50);
+  const [dissOn, setDissOn] = createSignal(true);
 
   let optimizeIntervalId = 0;
 
@@ -186,7 +189,7 @@ export default function DissonanceMeter() {
     optimizeIntervalId = window.setInterval(() => {
       const current = spectrum();
       const ref = referenceSpectrum();
-      const updated = optimizeStep(current, ref, lr(), closeness());
+      const updated = optimizeStep(current, ref, lr(), closeness(), dissOn() ? 1 : 0);
       updateSpectrum(updated);
     }, OPTIMIZE_INTERVAL);
   }
@@ -298,6 +301,12 @@ export default function DissonanceMeter() {
           onClick={() => (optimizing() ? stopOptimize() : startOptimize())}
         >
           {optimizing() ? "stop" : "optimize"}
+        </button>
+        <button
+          class={`optimize-btn ${dissOn() ? "active" : ""}`}
+          onClick={() => setDissOn(!dissOn())}
+        >
+          diss
         </button>
         <label class="lr-control">
           lr:
