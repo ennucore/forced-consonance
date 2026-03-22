@@ -75,15 +75,19 @@ function fftDissonance(peaks: { freq: number; amp: number }[]): number {
 // Dissonance + closeness computed on the spectrum directly
 // ---------------------------------------------------------------------------
 
+// Weight by energy (amp² × freq) so higher-pitch partials contribute more,
+// matching the closeness metric's energy model.
 function spectrumDissonance(lines: SpectralLine[]): number {
   if (lines.length < 2) return 0;
   let total = 0;
   for (let i = 0; i < lines.length; i++) {
     const li = lines[i]!;
+    if (li.freq === 0) continue;
+    const ei = li.amp * li.amp * li.freq;
     for (let j = i + 1; j < lines.length; j++) {
       const lj = lines[j]!;
-      if (li.freq === 0) continue;
-      total += li.amp * lj.amp * kernel(lj.freq / li.freq - 1);
+      const ej = lj.amp * lj.amp * lj.freq;
+      total += ei * ej * kernel(lj.freq / li.freq - 1);
     }
   }
   return total;
