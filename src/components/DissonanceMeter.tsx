@@ -97,44 +97,37 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Wasserstein W1 on log-energy for closeness
+// Wasserstein W1 on energy for closeness
 // ---------------------------------------------------------------------------
 
-const LOG_ENERGY_EPS = 1e-12;
-
-function toLogEnergy(amps: Float64Array): Float64Array {
+function toEnergy(amps: Float64Array): Float64Array {
   const freqs = getPoolFreqs();
   const grid = new Float64Array(SPECTRUM_SIZE);
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    grid[i] = Math.log(amps[i]! * amps[i]! * freqs[i]! + LOG_ENERGY_EPS);
+    grid[i] = amps[i]! * amps[i]! * freqs[i]!;
   }
   return grid;
 }
 
 function wasserstein(a: Float64Array, b: Float64Array): number {
-  const logA = toLogEnergy(a);
-  const logB = toLogEnergy(b);
-
-  // Shift to non-negative
-  let minVal = 0;
-  for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    minVal = Math.min(minVal, logA[i]!, logB[i]!);
-  }
+  const eA = toEnergy(a);
+  const eB = toEnergy(b);
 
   let sumA = 0, sumB = 0;
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    logA[i] = logA[i]! - minVal;
-    logB[i] = logB[i]! - minVal;
-    sumA += logA[i]!;
-    sumB += logB[i]!;
+    sumA += eA[i]!;
+    sumB += eB[i]!;
   }
 
-  if (sumA === 0 || sumB === 0) return 0;
+  if (sumA === 0 && sumB === 0) return 0;
+  // If one is all zeros, use the other's sum as normalizer
+  if (sumA === 0) sumA = sumB;
+  if (sumB === 0) sumB = sumA;
 
   let cdfA = 0, cdfB = 0, dist = 0;
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    cdfA += logA[i]! / sumA;
-    cdfB += logB[i]! / sumB;
+    cdfA += eA[i]! / sumA;
+    cdfB += eB[i]! / sumB;
     dist += Math.abs(cdfA - cdfB);
   }
   return dist / SPECTRUM_SIZE;
