@@ -172,17 +172,20 @@ export default function DissonanceMeter() {
 
   // Snapshot of amps when optimize was started
   let originalAmps: number[] = [];
-  let optimizeRafId = 0;
+  let optimizeIntervalId = 0;
 
   const history: number[] = [];
   let maxSeen = 0.001;
   let intervalId: number;
 
+  // Throttle optimization to ~5 steps/sec so audio crossfades settle
+  const OPTIMIZE_INTERVAL = 200;
+
   function startOptimize() {
     originalAmps = [...overtoneAmps()];
     setOptimizing(true);
 
-    function loop() {
+    optimizeIntervalId = window.setInterval(() => {
       const fundamentals = getActiveFundamentals();
       if (fundamentals.length >= 2) {
         const updated = optimizeStep(
@@ -193,14 +196,12 @@ export default function DissonanceMeter() {
         );
         setOvertoneAmps(updated);
       }
-      optimizeRafId = requestAnimationFrame(loop);
-    }
-    optimizeRafId = requestAnimationFrame(loop);
+    }, OPTIMIZE_INTERVAL);
   }
 
   function stopOptimize() {
     setOptimizing(false);
-    cancelAnimationFrame(optimizeRafId);
+    clearInterval(optimizeIntervalId);
   }
 
   onMount(() => {
@@ -258,7 +259,7 @@ export default function DissonanceMeter() {
 
   onCleanup(() => {
     clearInterval(intervalId);
-    cancelAnimationFrame(optimizeRafId);
+    clearInterval(optimizeIntervalId);
   });
 
   return (
