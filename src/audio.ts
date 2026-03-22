@@ -70,34 +70,19 @@ function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number 
       continue;
     }
 
-    const group = [tagged[i]!];
-    const notes = new Set([tagged[i]!.note]);
+    // Keep this partial, discard any from other notes within the window
+    result.push({ freq: tagged[i]!.freq, amp: tagged[i]!.amp });
 
     for (let j = i + 1; j < tagged.length; j++) {
       if (used.has(j)) continue;
       const c = tagged[j]!;
 
-      // Don't merge protected partials or partials from the same fundamental
       if (c.protected_) continue;
-      if (notes.has(c.note)) continue;
+      if (c.note === tagged[i]!.note) continue;
 
-      const tAmp = group.reduce((s, g) => s + g.amp, 0);
-      const avgFreq = group.reduce((s, g) => s + g.freq * g.amp, 0) / tAmp;
-
-      if (Math.abs(Math.log2(c.freq / avgFreq)) >= windowSemitones / 12) continue;
-
-      group.push(c);
-      notes.add(c.note);
-      used.add(j);
-    }
-
-    if (group.length === 1) {
-      result.push({ freq: group[0]!.freq, amp: group[0]!.amp });
-    } else {
-      const tAmp = group.reduce((s, g) => s + g.amp, 0);
-      const avgFreq = group.reduce((s, g) => s + g.freq * g.amp, 0) / tAmp;
-      const energy = group.reduce((s, g) => s + g.amp * g.amp, 0);
-      result.push({ freq: avgFreq, amp: Math.sqrt(energy) });
+      if (Math.abs(Math.log2(c.freq / tagged[i]!.freq)) < windowSemitones / 12) {
+        used.add(j); // discard
+      }
     }
   }
 
