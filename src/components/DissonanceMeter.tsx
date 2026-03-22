@@ -186,8 +186,10 @@ function optimizeStep(
 // ---------------------------------------------------------------------------
 
 export default function DissonanceMeter() {
-  let canvas!: HTMLCanvasElement;
-  let valueEl!: HTMLSpanElement;
+  let dissCanvas!: HTMLCanvasElement;
+  let closeCanvas!: HTMLCanvasElement;
+  let dissValueEl!: HTMLSpanElement;
+  let closeValueEl!: HTMLSpanElement;
 
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.01);
@@ -195,8 +197,10 @@ export default function DissonanceMeter() {
 
   let optimizeIntervalId = 0;
 
-  const history: number[] = [];
-  let maxSeen = 0.001;
+  const dissHistory: number[] = [];
+  const closeHistory: number[] = [];
+  let dissMax = 0.001;
+  let closeMax = 0.001;
   let intervalId: number;
 
   const OPTIMIZE_INTERVAL = 125; // ~8 steps/sec
@@ -219,56 +223,74 @@ export default function DissonanceMeter() {
     clearInterval(optimizeIntervalId);
   }
 
+  function drawSparkline(
+    cvs: HTMLCanvasElement,
+    hist: number[],
+    maxVal: number,
+    fillColor: string,
+    strokeColor: string
+  ) {
+    const ctx = cvs.getContext("2d")!;
+    const w = cvs.width;
+    const h = cvs.height;
+    ctx.clearRect(0, 0, w, h);
+    if (hist.length < 2) return;
+
+    ctx.beginPath();
+    for (let i = 0; i < hist.length; i++) {
+      const x = w - (hist.length - 1 - i) * (w / (HISTORY_LEN - 1));
+      const y = h - (hist[i]! / maxVal) * (h - 4);
+      if (i === 0) { ctx.moveTo(x, h); ctx.lineTo(x, y); }
+      else ctx.lineTo(x, y);
+    }
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+
+    ctx.beginPath();
+    for (let i = 0; i < hist.length; i++) {
+      const x = w - (hist.length - 1 - i) * (w / (HISTORY_LEN - 1));
+      const y = h - (hist[i]! / maxVal) * (h - 4);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
   onMount(() => {
-    const ctx = canvas.getContext("2d")!;
     const analyserNode = getAnalyser();
     const data = new Uint8Array(analyserNode.frequencyBinCount);
 
     intervalId = window.setInterval(() => {
       analyserNode.getByteFrequencyData(data);
 
+      // Dissonance from FFT
       const peaks = extractPeaks(data, analyserNode.context.sampleRate, analyserNode.fftSize);
       const d = fftDissonance(peaks);
+      dissHistory.push(d);
+      if (dissHistory.length > HISTORY_LEN) dissHistory.shift();
+      if (d > dissMax) dissMax = d;
+      else dissMax = dissMax * 0.999 + d * 0.001;
+      dissMax = Math.max(dissMax, 0.001);
+      dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
-      history.push(d);
-      if (history.length > HISTORY_LEN) history.shift();
+      // Closeness (Wasserstein)
+      const w = wasserstein(spectrum(), referenceSpectrum());
+      closeHistory.push(w);
+      if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
+      if (w > closeMax) closeMax = w;
+      else closeMax = closeMax * 0.999 + w * 0.001;
+      closeMax = Math.max(closeMax, 0.001);
+      closeValueEl.textContent = w > 0.0001 ? w.toFixed(4) : "—";
 
-      if (d > maxSeen) maxSeen = d;
-      else maxSeen = maxSeen * 0.999 + d * 0.001;
-      maxSeen = Math.max(maxSeen, 0.001);
-
-      valueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
-
-      // Draw sparkline
-      ctx.clearRect(0, 0, WIDTH, HEIGHT);
-      if (history.length < 2) return;
-
-      ctx.beginPath();
-      for (let i = 0; i < history.length; i++) {
-        const x = WIDTH - (history.length - 1 - i) * (WIDTH / (HISTORY_LEN - 1));
-        const y = HEIGHT - (history[i]! / maxSeen) * (HEIGHT - 4);
-        if (i === 0) {
-          ctx.moveTo(x, HEIGHT);
-          ctx.lineTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-      ctx.lineTo(WIDTH, HEIGHT);
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255, 97, 136, 0.15)";
-      ctx.fill();
-
-      ctx.beginPath();
-      for (let i = 0; i < history.length; i++) {
-        const x = WIDTH - (history.length - 1 - i) * (WIDTH / (HISTORY_LEN - 1));
-        const y = HEIGHT - (history[i]! / maxSeen) * (HEIGHT - 4);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.strokeStyle = "#ff6188";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      // Draw both sparklines
+      drawSparkline(dissCanvas, dissHistory, dissMax,
+        "rgba(255, 97, 136, 0.15)", "#ff6188");
+      drawSparkline(closeCanvas, closeHistory, closeMax,
+        "rgba(169, 220, 118, 0.15)", "#a9dc76");
     }, SAMPLE_INTERVAL);
   });
 
@@ -280,11 +302,22 @@ export default function DissonanceMeter() {
 
   return (
     <div class="dissonance-meter">
-      <div class="meter-header">
-        <span class="panel-label">dissonance</span>
-        <span class="meter-value" ref={valueEl}>—</span>
+      <div class="meter-charts">
+        <div class="meter-chart">
+          <div class="meter-header">
+            <span class="panel-label">dissonance</span>
+            <span class="meter-value" ref={dissValueEl}>—</span>
+          </div>
+          <canvas ref={dissCanvas} width={WIDTH} height={HEIGHT} />
+        </div>
+        <div class="meter-chart">
+          <div class="meter-header">
+            <span class="panel-label">closeness</span>
+            <span class="meter-value closeness-value" ref={closeValueEl}>—</span>
+          </div>
+          <canvas ref={closeCanvas} width={WIDTH} height={HEIGHT} />
+        </div>
       </div>
-      <canvas ref={canvas} width={WIDTH} height={HEIGHT} />
       <div class="optimize-controls">
         <button
           class={`optimize-btn ${optimizing() ? "active" : ""}`}

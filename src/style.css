@@ -214,6 +214,17 @@ h1 {
   gap: 6px;
 }
 
+.meter-charts {
+  display: flex;
+  gap: 12px;
+}
+
+.meter-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .meter-header {
   display: flex;
   align-items: baseline;
@@ -228,6 +239,11 @@ h1 {
   font-variant-numeric: tabular-nums;
   min-width: 3ch;
   text-align: right;
+}
+
+.meter-value.closeness-value {
+  color: var(--green);
+  font-size: 0.85rem;
 }
 
 .dissonance-meter canvas {
