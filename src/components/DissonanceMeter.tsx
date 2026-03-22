@@ -97,16 +97,23 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Amplitude MSE for closeness (no frequency weighting — stable gradients)
+// Unnormalized W1 on raw amplitudes for closeness
 // ---------------------------------------------------------------------------
+//
+// dist = Σ |cumsum_a[i] - cumsum_b[i]|
+//
+// Moving a peak costs distance × amplitude (cheap if nearby).
+// Removing/adding amplitude costs amplitude × remaining bins (expensive).
+// No normalization — total amplitude changes ARE penalized.
 
-function ampMSE(a: Float64Array, b: Float64Array): number {
-  let mse = 0;
+function unnormalizedW1(a: Float64Array, b: Float64Array): number {
+  let cumA = 0, cumB = 0, dist = 0;
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    const diff = a[i]! - b[i]!;
-    mse += diff * diff;
+    cumA += a[i]!;
+    cumB += b[i]!;
+    dist += Math.abs(cumA - cumB);
   }
-  return mse / SPECTRUM_SIZE;
+  return dist / SPECTRUM_SIZE;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +128,7 @@ function computeLoss(
   closenessWeight: number,
   dissWeight: number
 ): number {
-  return dissWeight * poolDissonance(amps) + closenessWeight * ampMSE(amps, ref);
+  return dissWeight * poolDissonance(amps) + closenessWeight * unnormalizedW1(amps, ref);
 }
 
 function optimizeStep(
@@ -250,7 +257,7 @@ export default function DissonanceMeter() {
       dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Closeness (Wasserstein)
-      const w = ampMSE(spectrum(), referenceSpectrum());
+      const w = unnormalizedW1(spectrum(), referenceSpectrum());
       closeHistory.push(w);
       if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
       if (w > closeMax) closeMax = w;
