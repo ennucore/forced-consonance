@@ -4,8 +4,9 @@ import {
   spectrum,
   referenceSpectrum,
   updateSpectrum,
-  setOnSpectrumReset,
-  type SpectralLine,
+  setOptimizerActive,
+  getPoolFreqs,
+  SPECTRUM_SIZE,
 } from "../audio";
 
 const HISTORY_LEN = 200;
@@ -72,124 +73,112 @@ function fftDissonance(peaks: { freq: number; amp: number }[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Dissonance + closeness computed on the spectrum directly
+// Dissonance on the pool spectrum
 // ---------------------------------------------------------------------------
 
-function spectrumDissonance(lines: SpectralLine[]): number {
-  if (lines.length < 2) return 0;
+function poolDissonance(amps: Float64Array): number {
+  const freqs = getPoolFreqs();
+  // Collect active bins
+  const active: { freq: number; amp: number }[] = [];
+  for (let i = 0; i < amps.length; i++) {
+    if (amps[i]! > 1e-6) active.push({ freq: freqs[i]!, amp: amps[i]! });
+  }
+  if (active.length < 2) return 0;
+
   let total = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const li = lines[i]!;
-    for (let j = i + 1; j < lines.length; j++) {
-      const lj = lines[j]!;
-      if (li.freq === 0) continue;
-      total += li.amp * lj.amp * kernel(lj.freq / li.freq - 1);
+  for (let i = 0; i < active.length; i++) {
+    const ai = active[i]!;
+    for (let j = i + 1; j < active.length; j++) {
+      const aj = active[j]!;
+      total += ai.amp * aj.amp * kernel(aj.freq / ai.freq - 1);
     }
   }
   return total;
 }
 
 // ---------------------------------------------------------------------------
-// Wasserstein W1 distance on log-energy spectra
+// Wasserstein W1 on log-energy for closeness
 // ---------------------------------------------------------------------------
-//
-// Maps spectral lines to a log-frequency grid (semitone bins).
-// Energy = amp² * freq (acoustic power: same amplitude at higher pitch
-// carries more energy). Compared in log scale.
-// W1 = ∫ |CDF_a(f) - CDF_b(f)| df, computed on the semitone grid.
 
-const GRID_SIZE = 128; // semitones (~10 octaves)
 const LOG_ENERGY_EPS = 1e-12;
 
-function toLogEnergyGrid(lines: SpectralLine[], minFreq: number): Float64Array {
-  const grid = new Float64Array(GRID_SIZE);
-  if (minFreq <= 0) return grid;
-  for (const l of lines) {
-    if (l.freq <= 0 || l.amp === 0) continue;
-    const semitone = 12 * Math.log2(l.freq / minFreq);
-    const bin = Math.round(semitone);
-    if (bin >= 0 && bin < GRID_SIZE) {
-      // Energy = amp² * freq (pitch-dependent power)
-      grid[bin] += l.amp * l.amp * l.freq;
-    }
-  }
-  // Convert to log scale
-  for (let i = 0; i < GRID_SIZE; i++) {
-    grid[i] = Math.log(grid[i]! + LOG_ENERGY_EPS);
+function toLogEnergy(amps: Float64Array): Float64Array {
+  const freqs = getPoolFreqs();
+  const grid = new Float64Array(SPECTRUM_SIZE);
+  for (let i = 0; i < SPECTRUM_SIZE; i++) {
+    grid[i] = Math.log(amps[i]! * amps[i]! * freqs[i]! + LOG_ENERGY_EPS);
   }
   return grid;
 }
 
-function spectralWasserstein(a: SpectralLine[], b: SpectralLine[]): number {
-  // Find global min freq for consistent grid
-  let minFreq = Infinity;
-  for (const l of a) if (l.freq > 0 && l.freq < minFreq) minFreq = l.freq;
-  for (const l of b) if (l.freq > 0 && l.freq < minFreq) minFreq = l.freq;
-  if (!isFinite(minFreq)) return 0;
+function wasserstein(a: Float64Array, b: Float64Array): number {
+  const logA = toLogEnergy(a);
+  const logB = toLogEnergy(b);
 
-  const gridA = toLogEnergyGrid(a, minFreq);
-  const gridB = toLogEnergyGrid(b, minFreq);
-
-  // Shift both grids so they're non-negative (W1 needs a distribution)
+  // Shift to non-negative
   let minVal = 0;
-  for (let i = 0; i < GRID_SIZE; i++) {
-    minVal = Math.min(minVal, gridA[i]!, gridB[i]!);
+  for (let i = 0; i < SPECTRUM_SIZE; i++) {
+    minVal = Math.min(minVal, logA[i]!, logB[i]!);
   }
 
   let sumA = 0, sumB = 0;
-  for (let i = 0; i < GRID_SIZE; i++) {
-    gridA[i] = gridA[i]! - minVal;
-    gridB[i] = gridB[i]! - minVal;
-    sumA += gridA[i]!;
-    sumB += gridB[i]!;
+  for (let i = 0; i < SPECTRUM_SIZE; i++) {
+    logA[i] = logA[i]! - minVal;
+    logB[i] = logB[i]! - minVal;
+    sumA += logA[i]!;
+    sumB += logB[i]!;
   }
 
   if (sumA === 0 || sumB === 0) return 0;
 
-  // W1 = sum of |CDF_a - CDF_b| over bins
   let cdfA = 0, cdfB = 0, dist = 0;
-  for (let i = 0; i < GRID_SIZE; i++) {
-    cdfA += gridA[i]! / sumA;
-    cdfB += gridB[i]! / sumB;
+  for (let i = 0; i < SPECTRUM_SIZE; i++) {
+    cdfA += logA[i]! / sumA;
+    cdfB += logB[i]! / sumB;
     dist += Math.abs(cdfA - cdfB);
   }
-  return dist / GRID_SIZE;
+  return dist / SPECTRUM_SIZE;
 }
 
 // ---------------------------------------------------------------------------
-// Optimizer: gradient descent on spectral line amplitudes
+// Optimizer: gradient descent on pool amplitudes
 // ---------------------------------------------------------------------------
 
 const GRAD_DELTA = 1e-4;
 
 function computeLoss(
-  lines: SpectralLine[],
-  ref: SpectralLine[],
+  amps: Float64Array,
+  ref: Float64Array,
   closenessWeight: number
 ): number {
-  return spectrumDissonance(lines) + closenessWeight * spectralWasserstein(lines, ref);
+  return poolDissonance(amps) + closenessWeight * wasserstein(amps, ref);
 }
 
 function optimizeStep(
-  current: SpectralLine[],
-  ref: SpectralLine[],
+  current: Float64Array,
+  ref: Float64Array,
   lr: number,
   closenessWeight: number
-): SpectralLine[] {
+): Float64Array {
   const n = current.length;
   const loss = computeLoss(current, ref, closenessWeight);
 
   const grad = new Float64Array(n);
+
+  // Only compute gradients for bins that are active or in the reference
   for (let i = 0; i < n; i++) {
-    const perturbed = current.map((l) => ({ ...l }));
-    perturbed[i]!.amp += GRAD_DELTA;
+    if (current[i]! < 1e-6 && ref[i]! < 1e-6) continue;
+
+    const perturbed = new Float64Array(current);
+    perturbed[i] += GRAD_DELTA;
     grad[i] = (computeLoss(perturbed, ref, closenessWeight) - loss) / GRAD_DELTA;
   }
 
-  return current.map((l, i) => ({
-    freq: l.freq,
-    amp: Math.max(0, l.amp - lr * grad[i]!),
-  }));
+  const result = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    result[i] = Math.max(0, current[i]! - lr * grad[i]!);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,12 +203,11 @@ export default function DissonanceMeter() {
 
   function startOptimize() {
     setOptimizing(true);
+    setOptimizerActive(true);
 
     optimizeIntervalId = window.setInterval(() => {
       const current = spectrum();
       const ref = referenceSpectrum();
-      if (current.length < 2) return;
-
       const updated = optimizeStep(current, ref, lr(), closeness());
       updateSpectrum(updated);
     }, OPTIMIZE_INTERVAL);
@@ -227,26 +215,9 @@ export default function DissonanceMeter() {
 
   function stopOptimize() {
     setOptimizing(false);
+    setOptimizerActive(false);
     clearInterval(optimizeIntervalId);
   }
-
-  // Reset optimizer when keys change
-  onMount(() => {
-    setOnSpectrumReset(() => {
-      if (optimizing()) {
-        // Restart optimizer with new reference
-        clearInterval(optimizeIntervalId);
-        optimizeIntervalId = window.setInterval(() => {
-          const current = spectrum();
-          const ref = referenceSpectrum();
-          if (current.length < 2) return;
-
-          const updated = optimizeStep(current, ref, lr(), closeness());
-          updateSpectrum(updated);
-        }, OPTIMIZE_INTERVAL);
-      }
-    });
-  });
 
   onMount(() => {
     const ctx = canvas.getContext("2d")!;
@@ -304,7 +275,7 @@ export default function DissonanceMeter() {
   onCleanup(() => {
     clearInterval(intervalId);
     clearInterval(optimizeIntervalId);
-    setOnSpectrumReset(null);
+    setOptimizerActive(false);
   });
 
   return (

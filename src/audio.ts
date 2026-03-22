@@ -27,99 +27,111 @@ export function getAnalyser(): AnalyserNode {
 }
 
 // ---------------------------------------------------------------------------
-// Spectrum: the central data structure
+// Fixed frequency pool
+// ---------------------------------------------------------------------------
+//
+// Pre-allocate one oscillator per semitone from C1 (~32 Hz) to C9 (~8372 Hz).
+// The spectrum is just an amplitude array over this fixed grid.
+// Nothing is ever created or destroyed after init — only gains change.
+
+const POOL_MIN_MIDI = 24;  // C1 ~32 Hz
+const POOL_MAX_MIDI = 108; // C9 ~8372 Hz
+const POOL_SIZE = POOL_MAX_MIDI - POOL_MIN_MIDI + 1; // 85 semitones
+
+function midiToFreq(midi: number): number {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// Pre-compute the frequency for each pool slot
+const POOL_FREQS: number[] = [];
+for (let m = POOL_MIN_MIDI; m <= POOL_MAX_MIDI; m++) {
+  POOL_FREQS.push(midiToFreq(m));
+}
+
+// Find the nearest pool index for a given frequency
+function nearestPoolIndex(freq: number): number {
+  // midi = 69 + 12 * log2(freq / 440)
+  const midi = 69 + 12 * Math.log2(freq / 440);
+  const idx = Math.round(midi) - POOL_MIN_MIDI;
+  return Math.max(0, Math.min(POOL_SIZE - 1, idx));
+}
+
+// ---------------------------------------------------------------------------
+// Spectrum state: amplitude per pool slot
 // ---------------------------------------------------------------------------
 
-export type SpectralLine = { freq: number; amp: number };
+export const SPECTRUM_SIZE = POOL_SIZE;
+export function getPoolFreqs(): number[] { return POOL_FREQS; }
 
-// The spectrum currently being synthesized
-export const [spectrum, setSpectrum] = createSignal<SpectralLine[]>([]);
+// Current amplitudes being played
+export const [spectrum, setSpectrum] = createSignal<Float64Array>(
+  new Float64Array(POOL_SIZE)
+);
 
-// The "reference" spectrum (snapshot at key change, before optimization)
-export const [referenceSpectrum, setReferenceSpectrum] = createSignal<SpectralLine[]>([]);
+// Reference spectrum: what the current chord "should" sound like
+export const [referenceSpectrum, setReferenceSpectrum] = createSignal<Float64Array>(
+  new Float64Array(POOL_SIZE)
+);
 
-// Active note fundamentals (just for tracking which keys are held)
+// Active notes
 const activeNotes = new Map<string, number>();
 
-// Callbacks for key-change events (optimizer reset)
-let onSpectrumReset: (() => void) | null = null;
-export function setOnSpectrumReset(cb: (() => void) | null) {
-  onSpectrumReset = cb;
-}
-
 /**
- * Build a spectrum from active fundamentals + current overtone amps.
+ * Build reference spectrum from current keys + overtone amps.
+ * Maps each harmonic to its nearest semitone bin.
  */
-function buildSpectrum(): SpectralLine[] {
-  const fundamentals = Array.from(activeNotes.values()).sort((a, b) => a - b);
-  if (fundamentals.length === 0) return [];
+function buildReference(): Float64Array {
+  const ref = new Float64Array(POOL_SIZE);
+  const fundamentals = Array.from(activeNotes.values());
+  if (fundamentals.length === 0) return ref;
 
   const amps = overtoneAmps();
-  const lines: SpectralLine[] = [];
-
-  for (let i = 0; i < amps.length; i++) {
-    const amp = amps[i]!;
-    if (amp === 0) continue;
-    const harmonic = i + 1;
-
-    for (const f0 of fundamentals) {
-      const freq = f0 * harmonic;
+  for (const f0 of fundamentals) {
+    for (let i = 0; i < amps.length; i++) {
+      const a = amps[i]!;
+      if (a === 0) continue;
+      const freq = f0 * (i + 1);
       if (freq > 20000) continue;
-      lines.push({ freq, amp });
+      const idx = nearestPoolIndex(freq);
+      ref[idx] = Math.max(ref[idx]!, a); // use max if multiple harmonics land on same bin
     }
   }
-
-  return lines;
+  return ref;
 }
 
 /**
- * Regenerate spectrum from keys + overtones, set as both current and reference.
+ * Update the reference spectrum (called on key change and overtone change).
+ * Does NOT touch the playing spectrum — the optimizer steers it.
  */
-function resetSpectrum() {
-  const lines = buildSpectrum();
-  setSpectrum(lines);
-  setReferenceSpectrum(lines.map((l) => ({ ...l })));
-  renderSpectrum(lines);
-  onSpectrumReset?.();
+function updateReference() {
+  setReferenceSpectrum(buildReference());
 }
 
 // ---------------------------------------------------------------------------
-// Audio renderer: plays whatever spectrum it's given
+// Audio pool: persistent oscillators
 // ---------------------------------------------------------------------------
 
-let rendered: { oscs: OscillatorNode[]; gains: GainNode[]; master: GainNode } | null = null;
+let pool: { oscs: OscillatorNode[]; gains: GainNode[]; master: GainNode } | null = null;
 
-function renderSpectrum(lines: SpectralLine[]) {
+function ensurePool() {
+  if (pool) return;
   const audio = getCtx();
   const now = audio.currentTime;
 
-  if (rendered) {
-    const old = rendered;
-    old.master.gain.cancelScheduledValues(now);
-    old.master.gain.setValueAtTime(old.master.gain.value, now);
-    old.master.gain.linearRampToValueAtTime(0, now + 0.008);
-    for (const osc of old.oscs) osc.stop(now + 0.01);
-    rendered = null;
-  }
-
-  if (lines.length === 0) return;
-
   const master = audio.createGain();
-  master.gain.setValueAtTime(0, now);
-  master.gain.linearRampToValueAtTime(0.25, now + 0.008);
+  master.gain.setValueAtTime(0.25, now);
   master.connect(getAnalyser());
 
   const oscs: OscillatorNode[] = [];
   const gains: GainNode[] = [];
 
-  for (const line of lines) {
+  for (let i = 0; i < POOL_SIZE; i++) {
     const osc = audio.createOscillator();
     osc.type = "sine";
-    osc.frequency.value = line.freq;
+    osc.frequency.value = POOL_FREQS[i]!;
 
     const gain = audio.createGain();
-    gain.gain.setValueAtTime(line.amp, now);
-    gain.gain.exponentialRampToValueAtTime(line.amp * 0.6, now + 0.3);
+    gain.gain.setValueAtTime(0, now);
 
     osc.connect(gain);
     gain.connect(master);
@@ -129,31 +141,31 @@ function renderSpectrum(lines: SpectralLine[]) {
     gains.push(gain);
   }
 
-  rendered = { oscs, gains, master };
+  pool = { oscs, gains, master };
 }
 
 /**
- * Called by the optimizer to update spectrum amplitudes in-place.
- * Smoothly ramps existing oscillator gains instead of tearing down
- * and rebuilding, avoiding crossfade artifacts.
+ * Apply the current spectrum amplitudes to the oscillator pool.
  */
-export function updateSpectrum(lines: SpectralLine[]) {
-  setSpectrum(lines);
+function applySpectrum(amps: Float64Array) {
+  if (!pool) return;
+  const audio = getCtx();
+  const now = audio.currentTime;
 
-  // If the oscillator count matches, update gains in-place
-  if (rendered && rendered.gains.length === lines.length) {
-    const audio = getCtx();
-    const now = audio.currentTime;
-    for (let i = 0; i < lines.length; i++) {
-      const g = rendered.gains[i]!;
-      g.gain.cancelScheduledValues(now);
-      g.gain.setValueAtTime(g.gain.value, now);
-      g.gain.linearRampToValueAtTime(lines[i]!.amp * 0.6, now + 0.05);
-    }
-  } else {
-    // Structure changed — full rebuild
-    renderSpectrum(lines);
+  for (let i = 0; i < POOL_SIZE; i++) {
+    const g = pool.gains[i]!;
+    g.gain.cancelScheduledValues(now);
+    g.gain.setValueAtTime(g.gain.value, now);
+    g.gain.linearRampToValueAtTime(amps[i]!, now + 0.03);
   }
+}
+
+/**
+ * Called by the optimizer to update the playing spectrum.
+ */
+export function updateSpectrum(amps: Float64Array) {
+  setSpectrum(amps);
+  applySpectrum(amps);
 }
 
 // ---------------------------------------------------------------------------
@@ -161,35 +173,46 @@ export function updateSpectrum(lines: SpectralLine[]) {
 // ---------------------------------------------------------------------------
 
 export function refreshActiveNotes() {
-  if (activeNotes.size > 0) resetSpectrum();
+  updateReference();
+  // If optimizer is not running, snap the playing spectrum to the reference
+  if (!optimizerActive) {
+    const ref = buildReference();
+    setSpectrum(ref);
+    applySpectrum(ref);
+  }
+}
+
+let optimizerActive = false;
+export function setOptimizerActive(active: boolean) {
+  optimizerActive = active;
 }
 
 export function noteOn(note: string, freq: number) {
   if (activeNotes.has(note)) return;
+  ensurePool();
   activeNotes.set(note, freq);
-  resetSpectrum();
+  updateReference();
+
+  if (!optimizerActive) {
+    // Snap playing spectrum to reference
+    const ref = buildReference();
+    setSpectrum(ref);
+    applySpectrum(ref);
+  }
+  // If optimizer is active, it will steer toward new reference
 }
 
 export function noteOff(note: string) {
   if (!activeNotes.has(note)) return;
   activeNotes.delete(note);
+  updateReference();
 
-  if (activeNotes.size === 0) {
-    setSpectrum([]);
-    setReferenceSpectrum([]);
-    if (rendered) {
-      const audio = getCtx();
-      const now = audio.currentTime;
-      rendered.master.gain.cancelScheduledValues(now);
-      rendered.master.gain.setValueAtTime(rendered.master.gain.value, now);
-      rendered.master.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-      for (const osc of rendered.oscs) osc.stop(now + 0.35);
-      rendered = null;
-    }
-    onSpectrumReset?.();
-  } else {
-    resetSpectrum();
+  if (!optimizerActive) {
+    const ref = buildReference();
+    setSpectrum(ref);
+    applySpectrum(ref);
   }
+  // If optimizer is active, it will steer toward new reference (which has 0s for released notes)
 }
 
 // ---------------------------------------------------------------------------
