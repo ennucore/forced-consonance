@@ -339,7 +339,7 @@ export default function DissonanceMeter() {
 
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.3162);
-  const [closeness, setCloseness] = createSignal(31);
+  const [closeness, setCloseness] = createSignal(7);
   const [dissOn, setDissOn] = createSignal(true);
   const [mode, setMode] = createSignal<"transport" | "joint">("joint");
   const [stepsPerSec, setStepsPerSec] = createSignal(30);
