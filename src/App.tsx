@@ -44,18 +44,21 @@ export default function App() {
   }
 
   function handleMidiMessage(e: MIDIMessageEvent) {
-    const [status, midiNote, velocity] = e.data!;
-    const cmd = status! & 0xf0;
+    const data = e.data;
+    if (!data || data.length < 3) return;
 
-    if (cmd === 0x90 && velocity! > 0) {
-      // Note on
-      const name = midiToNoteName(midiNote!);
-      const freq = midiToFreq(midiNote!);
+    const status = data[0]!;
+    const midiNote = data[1]!;
+    const velocity = data[2]!;
+    const cmd = status & 0xf0;
+
+    if (cmd === 0x90 && velocity > 0) {
+      const name = midiToNoteName(midiNote);
+      const freq = midiToFreq(midiNote);
       noteOn(name, freq);
       setActive((prev) => new Set(prev).add(name));
     } else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) {
-      // Note off
-      const name = midiToNoteName(midiNote!);
+      const name = midiToNoteName(midiNote);
       noteOff(name);
       setActive((prev) => {
         const next = new Set(prev);
