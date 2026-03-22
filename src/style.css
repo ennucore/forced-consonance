@@ -235,6 +235,76 @@ h1 {
   border-radius: 4px;
 }
 
+.optimize-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.optimize-btn {
+  background: var(--bg);
+  color: var(--green);
+  border: 1px solid var(--green);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 0.65rem;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  white-space: nowrap;
+}
+
+.optimize-btn:hover {
+  background: var(--bg-light);
+}
+
+.optimize-btn.active {
+  background: var(--green);
+  color: var(--bg);
+}
+
+.lr-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6rem;
+  color: var(--fg-dim);
+}
+
+.lr-control input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 60px;
+  height: 4px;
+  background: var(--bg);
+  border-radius: 2px;
+  outline: none;
+}
+
+.lr-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--green);
+  cursor: pointer;
+}
+
+.lr-control input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--green);
+  cursor: pointer;
+  border: none;
+}
+
+.lr-value {
+  font-variant-numeric: tabular-nums;
+  min-width: 4ch;
+}
+
 /* ------------------------------------------------------------------ */
 /* Spectrum analyser                                                   */
 /* ------------------------------------------------------------------ */
