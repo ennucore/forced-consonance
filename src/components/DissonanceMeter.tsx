@@ -179,7 +179,7 @@ export default function DissonanceMeter() {
   let intervalId: number;
 
   // Throttle optimization to ~5 steps/sec so audio crossfades settle
-  const OPTIMIZE_INTERVAL = 50;
+  const OPTIMIZE_INTERVAL = 125;
 
   function startOptimize() {
     originalAmps = [...overtoneAmps()];
