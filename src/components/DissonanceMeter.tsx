@@ -409,6 +409,9 @@ export default function DissonanceMeter() {
   }
 
   onMount(() => {
+    // Start optimizer by default
+    startOptimize();
+
     const analyserNode = getAnalyser();
     const data = new Uint8Array(analyserNode.frequencyBinCount);
 

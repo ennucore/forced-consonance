@@ -1,6 +1,6 @@
 import { createEffect, createSignal, onMount, onCleanup, For } from "solid-js";
 import { buildKeys, buildKeyMap, midiToFreq, midiToNoteName, type PianoKey } from "./keys";
-import { noteOn, noteOff, refreshActiveNotes } from "./audio";
+import { noteOn, noteOff, refreshActiveNotes, scaleNoteAmp } from "./audio";
 import { overtoneAmps } from "./overtones";
 import { OvertoneEditor } from "./components/OvertoneEditor";
 import SpectrumAnalyser from "./components/SpectrumAnalyser";
@@ -45,7 +45,28 @@ export default function App() {
 
   // Sustain pedal state
   let pedalDown = false;
-  const sustainedNotes = new Set<string>(); // notes held by pedal after key release
+  const sustainedNotes = new Map<string, number>(); // name -> current amplitude (0-1)
+
+  const DECAY_RATE = 0.97; // per tick (~30hz)
+  const DECAY_THRESHOLD = 0.01;
+  let decayIntervalId = 0;
+
+  function startDecay() {
+    if (decayIntervalId) return;
+    decayIntervalId = window.setInterval(() => {
+      if (sustainedNotes.size === 0) return;
+      for (const [name, amp] of sustainedNotes) {
+        const newAmp = amp * DECAY_RATE;
+        if (newAmp < DECAY_THRESHOLD) {
+          sustainedNotes.delete(name);
+          releaseNote(name);
+        } else {
+          sustainedNotes.set(name, newAmp);
+          scaleNoteAmp(name, newAmp);
+        }
+      }
+    }, 33); // ~30hz
+  }
 
   function releaseNote(name: string) {
     noteOff(name);
@@ -71,10 +92,11 @@ export default function App() {
       if (byte1 === 64) {
         if (byte2 >= 64) {
           pedalDown = true;
+          startDecay();
         } else {
           pedalDown = false;
           // Release all sustained notes
-          for (const name of sustainedNotes) {
+          for (const [name] of sustainedNotes) {
             releaseNote(name);
           }
           sustainedNotes.clear();
@@ -92,7 +114,7 @@ export default function App() {
     } else if (cmd === 0x80 || (cmd === 0x90 && byte2 === 0)) {
       const name = midiToNoteName(byte1);
       if (pedalDown) {
-        sustainedNotes.add(name);
+        sustainedNotes.set(name, 1.0);
       } else {
         releaseNote(name);
       }
@@ -122,6 +144,7 @@ export default function App() {
   onCleanup(() => {
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("keyup", onKeyUp);
+    clearInterval(decayIntervalId);
   });
 
   const whiteKeys = pianoKeys.filter((k) => k.type === "white");

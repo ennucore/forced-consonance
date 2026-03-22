@@ -73,8 +73,23 @@ export const [referenceSpectrum, setReferenceSpectrum] = createSignal<Float64Arr
   new Float64Array(POOL_SIZE)
 );
 
-// Active notes
-const activeNotes = new Map<string, number>();
+// Active notes: name -> { freq, amp (0-1 scaling factor) }
+const activeNotes = new Map<string, { freq: number; amp: number }>();
+
+/**
+ * Scale amplitude of an active note (for pedal decay).
+ */
+export function scaleNoteAmp(note: string, amp: number) {
+  const entry = activeNotes.get(note);
+  if (!entry) return;
+  entry.amp = amp;
+  updateReference();
+  if (!optimizerActive) {
+    const ref = buildReference();
+    setSpectrum(ref);
+    applySpectrum(ref);
+  }
+}
 
 /**
  * Build reference spectrum from current keys + overtone amps.
@@ -82,18 +97,18 @@ const activeNotes = new Map<string, number>();
  */
 function buildReference(): Float64Array {
   const ref = new Float64Array(POOL_SIZE);
-  const fundamentals = Array.from(activeNotes.values());
-  if (fundamentals.length === 0) return ref;
+  const entries = Array.from(activeNotes.values());
+  if (entries.length === 0) return ref;
 
   const amps = overtoneAmps();
-  for (const f0 of fundamentals) {
+  for (const { freq: f0, amp: noteAmp } of entries) {
     for (let i = 0; i < amps.length; i++) {
-      const a = amps[i]!;
+      const a = amps[i]! * noteAmp;
       if (a === 0) continue;
       const freq = f0 * (i + 1);
       if (freq > 20000) continue;
       const idx = nearestPoolIndex(freq);
-      ref[idx] = Math.max(ref[idx]!, a); // use max if multiple harmonics land on same bin
+      ref[idx] = Math.max(ref[idx]!, a);
     }
   }
   return ref;
@@ -190,7 +205,7 @@ export function setOptimizerActive(active: boolean) {
 export function noteOn(note: string, freq: number) {
   if (activeNotes.has(note)) return;
   ensurePool();
-  activeNotes.set(note, freq);
+  activeNotes.set(note, { freq, amp: 1 });
   updateReference();
 
   if (!optimizerActive) {
