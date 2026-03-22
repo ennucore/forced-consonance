@@ -1,10 +1,12 @@
 import { createSignal, onMount, onCleanup } from "solid-js";
-import { getAnalyser, getActiveFundamentals } from "../audio";
 import {
-  overtoneAmps,
-  setOvertoneAmps,
-  computeChordDissonance,
-} from "../overtones";
+  getAnalyser,
+  spectrum,
+  referenceSpectrum,
+  updateSpectrum,
+  setOnSpectrumReset,
+  type SpectralLine,
+} from "../audio";
 
 const HISTORY_LEN = 200;
 const WIDTH = 200;
@@ -12,7 +14,7 @@ const HEIGHT = 48;
 const SAMPLE_INTERVAL = 50; // ms
 
 // ---------------------------------------------------------------------------
-// Sethares roughness kernel (mirrors overtones.ts)
+// Sethares roughness kernel
 // ---------------------------------------------------------------------------
 
 const KERNEL_A = 0.0023;
@@ -56,7 +58,7 @@ function extractPeaks(
   return peaks;
 }
 
-function spectralDissonance(peaks: { freq: number; amp: number }[]): number {
+function fftDissonance(peaks: { freq: number; amp: number }[]): number {
   if (peaks.length < 2) return 0;
   let total = 0;
   for (let i = 0; i < peaks.length; i++) {
@@ -70,20 +72,37 @@ function spectralDissonance(peaks: { freq: number; amp: number }[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Gaussian-blurred MSE on a semitone grid (closeness regularizer)
+// Dissonance + closeness computed on the spectrum directly
 // ---------------------------------------------------------------------------
 
-// Map overtone amplitudes to a semitone-spaced grid.
-// Harmonic n is at 12*log2(n) semitones above fundamental.
-const GRID_SIZE = 49; // 0..48 semitones covers up to harmonic 16
+function spectrumDissonance(lines: SpectralLine[]): number {
+  if (lines.length < 2) return 0;
+  let total = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const li = lines[i]!;
+    for (let j = i + 1; j < lines.length; j++) {
+      const lj = lines[j]!;
+      if (li.freq === 0) continue;
+      total += li.amp * lj.amp * kernel(lj.freq / li.freq - 1);
+    }
+  }
+  return total;
+}
 
-function toSemitoneGrid(amps: number[]): Float64Array {
+// Gaussian-blurred MSE on a semitone grid for closeness regularization.
+// Maps spectral lines (arbitrary Hz) to a semitone grid relative to the
+// lowest frequency, blurs, then compares.
+const GRID_SIZE = 128; // semitones (covers ~10 octaves)
+
+function toSemitoneGrid(lines: SpectralLine[], minFreq: number): Float64Array {
   const grid = new Float64Array(GRID_SIZE);
-  for (let i = 0; i < amps.length; i++) {
-    const semitone = 12 * Math.log2(i + 1);
+  if (minFreq <= 0) return grid;
+  for (const l of lines) {
+    if (l.freq <= 0 || l.amp === 0) continue;
+    const semitone = 12 * Math.log2(l.freq / minFreq);
     const bin = Math.round(semitone);
     if (bin >= 0 && bin < GRID_SIZE) {
-      grid[bin] += amps[i]!;
+      grid[bin] += l.amp;
     }
   }
   return grid;
@@ -107,9 +126,15 @@ function gaussianBlur(grid: Float64Array, sigma: number): Float64Array {
   return result;
 }
 
-function blurredMSE(ampsA: number[], ampsB: number[]): number {
-  const gridA = gaussianBlur(toSemitoneGrid(ampsA), 1);
-  const gridB = gaussianBlur(toSemitoneGrid(ampsB), 1);
+function blurredMSE(a: SpectralLine[], b: SpectralLine[]): number {
+  // Find global min freq for consistent grid
+  let minFreq = Infinity;
+  for (const l of a) if (l.freq > 0 && l.freq < minFreq) minFreq = l.freq;
+  for (const l of b) if (l.freq > 0 && l.freq < minFreq) minFreq = l.freq;
+  if (!isFinite(minFreq)) return 0;
+
+  const gridA = gaussianBlur(toSemitoneGrid(a, minFreq), 1);
+  const gridB = gaussianBlur(toSemitoneGrid(b, minFreq), 1);
   let mse = 0;
   for (let i = 0; i < GRID_SIZE; i++) {
     const diff = gridA[i]! - gridB[i]!;
@@ -119,44 +144,38 @@ function blurredMSE(ampsA: number[], ampsB: number[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Optimizer: gradient descent on overtone amps
+// Optimizer: gradient descent on spectral line amplitudes
 // ---------------------------------------------------------------------------
 
-// Balance between dissonance reduction and staying close to original.
-// The closeness term is scaled up so it meaningfully competes with dissonance.
 const CLOSENESS_WEIGHT = 50;
 const GRAD_DELTA = 1e-4;
 
 function computeLoss(
-  amps: number[],
-  originalAmps: number[],
-  fundamentals: number[]
+  lines: SpectralLine[],
+  ref: SpectralLine[]
 ): number {
-  const diss = computeChordDissonance(amps, fundamentals);
-  const close = blurredMSE(amps, originalAmps);
-  return diss + CLOSENESS_WEIGHT * close;
+  return spectrumDissonance(lines) + CLOSENESS_WEIGHT * blurredMSE(lines, ref);
 }
 
 function optimizeStep(
-  currentAmps: number[],
-  originalAmps: number[],
-  fundamentals: number[],
+  current: SpectralLine[],
+  ref: SpectralLine[],
   lr: number
-): number[] {
-  const n = currentAmps.length;
-  const loss = computeLoss(currentAmps, originalAmps, fundamentals);
+): SpectralLine[] {
+  const n = current.length;
+  const loss = computeLoss(current, ref);
 
   const grad = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    const perturbed = [...currentAmps];
-    perturbed[i]! += GRAD_DELTA;
-    const lossP = computeLoss(perturbed, originalAmps, fundamentals);
-    grad[i] = (lossP - loss) / GRAD_DELTA;
+    const perturbed = current.map((l) => ({ ...l }));
+    perturbed[i]!.amp += GRAD_DELTA;
+    grad[i] = (computeLoss(perturbed, ref) - loss) / GRAD_DELTA;
   }
 
-  return currentAmps.map((a, i) =>
-    Math.max(0, Math.min(1, a - lr * grad[i]!))
-  );
+  return current.map((l, i) => ({
+    freq: l.freq,
+    amp: Math.max(0, l.amp - lr * grad[i]!),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -170,32 +189,24 @@ export default function DissonanceMeter() {
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.01);
 
-  // Snapshot of amps when optimize was started
-  let originalAmps: number[] = [];
   let optimizeIntervalId = 0;
 
   const history: number[] = [];
   let maxSeen = 0.001;
   let intervalId: number;
 
-  // Throttle optimization to ~5 steps/sec so audio crossfades settle
-  const OPTIMIZE_INTERVAL = 125;
+  const OPTIMIZE_INTERVAL = 125; // ~8 steps/sec
 
   function startOptimize() {
-    originalAmps = [...overtoneAmps()];
     setOptimizing(true);
 
     optimizeIntervalId = window.setInterval(() => {
-      const fundamentals = getActiveFundamentals();
-      if (fundamentals.length >= 2) {
-        const updated = optimizeStep(
-          overtoneAmps(),
-          originalAmps,
-          fundamentals,
-          lr()
-        );
-        setOvertoneAmps(updated);
-      }
+      const current = spectrum();
+      const ref = referenceSpectrum();
+      if (current.length < 2) return;
+
+      const updated = optimizeStep(current, ref, lr());
+      updateSpectrum(updated);
     }, OPTIMIZE_INTERVAL);
   }
 
@@ -204,16 +215,34 @@ export default function DissonanceMeter() {
     clearInterval(optimizeIntervalId);
   }
 
+  // Reset optimizer when keys change
+  onMount(() => {
+    setOnSpectrumReset(() => {
+      if (optimizing()) {
+        // Restart optimizer with new reference
+        clearInterval(optimizeIntervalId);
+        optimizeIntervalId = window.setInterval(() => {
+          const current = spectrum();
+          const ref = referenceSpectrum();
+          if (current.length < 2) return;
+
+          const updated = optimizeStep(current, ref, lr());
+          updateSpectrum(updated);
+        }, OPTIMIZE_INTERVAL);
+      }
+    });
+  });
+
   onMount(() => {
     const ctx = canvas.getContext("2d")!;
-    const analyser = getAnalyser();
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    const analyserNode = getAnalyser();
+    const data = new Uint8Array(analyserNode.frequencyBinCount);
 
     intervalId = window.setInterval(() => {
-      analyser.getByteFrequencyData(data);
+      analyserNode.getByteFrequencyData(data);
 
-      const peaks = extractPeaks(data, analyser.context.sampleRate, analyser.fftSize);
-      const d = spectralDissonance(peaks);
+      const peaks = extractPeaks(data, analyserNode.context.sampleRate, analyserNode.fftSize);
+      const d = fftDissonance(peaks);
 
       history.push(d);
       if (history.length > HISTORY_LEN) history.shift();
@@ -260,6 +289,7 @@ export default function DissonanceMeter() {
   onCleanup(() => {
     clearInterval(intervalId);
     clearInterval(optimizeIntervalId);
+    setOnSpectrumReset(null);
   });
 
   return (

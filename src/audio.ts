@@ -1,3 +1,4 @@
+import { createSignal } from "solid-js";
 import { overtoneAmps } from "./overtones";
 
 let ctx: AudioContext | null = null;
@@ -26,48 +27,69 @@ export function getAnalyser(): AnalyserNode {
 }
 
 // ---------------------------------------------------------------------------
-// Chord partial construction
+// Spectrum: the central data structure
 // ---------------------------------------------------------------------------
 
-type RenderedPartial = { freq: number; amp: number };
+export type SpectralLine = { freq: number; amp: number };
 
-// Active notes stored as fundamentals; overtone stack rebuilt on every render
-// so preset/editor changes apply immediately.
+// The spectrum currently being synthesized
+export const [spectrum, setSpectrum] = createSignal<SpectralLine[]>([]);
+
+// The "reference" spectrum (snapshot at key change, before optimization)
+export const [referenceSpectrum, setReferenceSpectrum] = createSignal<SpectralLine[]>([]);
+
+// Active note fundamentals (just for tracking which keys are held)
 const activeNotes = new Map<string, number>();
 
-export function getActiveFundamentals(): number[] {
-  return Array.from(activeNotes.values());
+// Callbacks for key-change events (optimizer reset)
+let onSpectrumReset: (() => void) | null = null;
+export function setOnSpectrumReset(cb: (() => void) | null) {
+  onSpectrumReset = cb;
 }
 
-function buildChordPartials(): RenderedPartial[] {
+/**
+ * Build a spectrum from active fundamentals + current overtone amps.
+ */
+function buildSpectrum(): SpectralLine[] {
   const fundamentals = Array.from(activeNotes.values()).sort((a, b) => a - b);
   if (fundamentals.length === 0) return [];
 
   const amps = overtoneAmps();
-  const result: RenderedPartial[] = [];
+  const lines: SpectralLine[] = [];
 
   for (let i = 0; i < amps.length; i++) {
     const amp = amps[i]!;
     if (amp === 0) continue;
     const harmonic = i + 1;
 
-    for (const fundamental of fundamentals) {
-      const freq = fundamental * harmonic;
+    for (const f0 of fundamentals) {
+      const freq = f0 * harmonic;
       if (freq > 20000) continue;
-      result.push({ freq, amp });
+      lines.push({ freq, amp });
     }
   }
 
-  return result;
+  return lines;
+}
+
+/**
+ * Regenerate spectrum from keys + overtones, set as both current and reference.
+ */
+function resetSpectrum() {
+  const lines = buildSpectrum();
+  setSpectrum(lines);
+  setReferenceSpectrum(lines.map((l) => ({ ...l })));
+  renderSpectrum(lines);
+  onSpectrumReset?.();
 }
 
 // ---------------------------------------------------------------------------
-// Render all active notes
+// Audio renderer: plays whatever spectrum it's given
 // ---------------------------------------------------------------------------
 
-let rendered: { oscs: OscillatorNode[]; master: GainNode } | null = null;
+let rendered: { oscs: OscillatorNode[]; gains: GainNode[]; master: GainNode } | null = null;
 
-function renderAll() {
+function renderSpectrum(lines: SpectralLine[]) {
   const audio = getCtx();
   const now = audio.currentTime;
 
@@ -80,8 +102,7 @@ function renderAll() {
     rendered = null;
   }
 
-  const partials = buildChordPartials();
-  if (partials.length === 0) return;
+  if (lines.length === 0) return;
 
   const master = audio.createGain();
   master.gain.setValueAtTime(0, now);
@@ -89,33 +110,48 @@ function renderAll() {
   master.connect(getAnalyser());
 
   const oscs: OscillatorNode[] = [];
+  const gains: GainNode[] = [];
 
-  for (const partial of partials) {
+  for (const line of lines) {
     const osc = audio.createOscillator();
     osc.type = "sine";
-    osc.frequency.value = partial.freq;
+    osc.frequency.value = line.freq;
 
     const gain = audio.createGain();
-    gain.gain.setValueAtTime(partial.amp, now);
-    gain.gain.exponentialRampToValueAtTime(partial.amp * 0.6, now + 0.3);
+    gain.gain.setValueAtTime(line.amp, now);
+    gain.gain.exponentialRampToValueAtTime(line.amp * 0.6, now + 0.3);
 
     osc.connect(gain);
     gain.connect(master);
     osc.start(now);
+
     oscs.push(osc);
+    gains.push(gain);
   }
 
-  rendered = { oscs, master };
+  rendered = { oscs, gains, master };
 }
 
+/**
+ * Called by the optimizer to update the spectrum and re-render.
+ */
+export function updateSpectrum(lines: SpectralLine[]) {
+  setSpectrum(lines);
+  renderSpectrum(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Note on/off
+// ---------------------------------------------------------------------------
+
 export function refreshActiveNotes() {
-  if (activeNotes.size > 0) renderAll();
+  if (activeNotes.size > 0) resetSpectrum();
 }
 
 export function noteOn(note: string, freq: number) {
   if (activeNotes.has(note)) return;
   activeNotes.set(note, freq);
-  renderAll();
+  resetSpectrum();
 }
 
 export function noteOff(note: string) {
@@ -123,6 +159,8 @@ export function noteOff(note: string) {
   activeNotes.delete(note);
 
   if (activeNotes.size === 0) {
+    setSpectrum([]);
+    setReferenceSpectrum([]);
     if (rendered) {
       const audio = getCtx();
       const now = audio.currentTime;
@@ -132,8 +170,9 @@ export function noteOff(note: string) {
       for (const osc of rendered.oscs) osc.stop(now + 0.35);
       rendered = null;
     }
+    onSpectrumReset?.();
   } else {
-    renderAll();
+    resetSpectrum();
   }
 }
 
