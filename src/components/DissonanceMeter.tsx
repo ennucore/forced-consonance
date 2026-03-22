@@ -546,7 +546,7 @@ export default function DissonanceMeter() {
           Δd:
           <input
             type="range"
-            min="0"
+            min="-10"
             max="10"
             step="0.1"
             value={dissDelta()}
