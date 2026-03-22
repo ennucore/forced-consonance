@@ -97,16 +97,92 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Amplitude MSE for closeness (no frequency weighting — stable gradients)
+// Sinkhorn divergence for closeness (smooth optimal transport)
 // ---------------------------------------------------------------------------
+//
+// Entropy-regularized OT: smooth gradients that "know" how to slide peaks.
+// Cost = squared semitone distance. ε controls blur (larger = smoother).
+// Includes total mass penalty so amplitude changes are penalized.
 
-function ampMSE(a: Float64Array, b: Float64Array): number {
-  let mse = 0;
-  for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    const diff = a[i]! - b[i]!;
-    mse += diff * diff;
+const SINKHORN_EPS = 4;     // regularization strength (semitones²)
+const SINKHORN_ITERS = 15;
+const MASS_PENALTY = 5;
+
+// Precompute log-kernel: logK[i*n+j] = -(i-j)² / eps
+const _logK = new Float64Array(SPECTRUM_SIZE * SPECTRUM_SIZE);
+for (let i = 0; i < SPECTRUM_SIZE; i++) {
+  for (let j = 0; j < SPECTRUM_SIZE; j++) {
+    const d = i - j;
+    _logK[i * SPECTRUM_SIZE + j] = -(d * d) / SINKHORN_EPS;
   }
-  return mse / SPECTRUM_SIZE;
+}
+
+function sinkhornDivergence(a: Float64Array, b: Float64Array): number {
+  const n = SPECTRUM_SIZE;
+  const bg = 1e-8;
+
+  // Build measures with background, track total mass
+  const mu = new Float64Array(n);
+  const nu = new Float64Array(n);
+  let sumA = 0, sumB = 0;
+  for (let i = 0; i < n; i++) {
+    mu[i] = a[i]! + bg;
+    nu[i] = b[i]! + bg;
+    sumA += mu[i]!;
+    sumB += nu[i]!;
+  }
+  // Normalize to probability for Sinkhorn
+  for (let i = 0; i < n; i++) {
+    mu[i] /= sumA;
+    nu[i] /= sumB;
+  }
+
+  // Log-domain Sinkhorn iterations
+  const f = new Float64Array(n);
+  const g = new Float64Array(n);
+
+  for (let iter = 0; iter < SINKHORN_ITERS; iter++) {
+    // Update f: f_i = -eps * logsumexp_j((g_j + logK_ij)/eps + log(nu_j))
+    //         simplified: f_i = -eps * logsumexp_j(g_j/eps + logK_ij/eps ... )
+    // Actually: f_i = -eps * logsumexp_j( (g_j - C_ij)/eps + log(nu_j) )
+    // where logK_ij = -C_ij/eps, so (g_j - C_ij)/eps = g_j/eps + logK_ij
+    for (let i = 0; i < n; i++) {
+      let mx = -Infinity;
+      for (let j = 0; j < n; j++) {
+        const v = g[j]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(nu[j]!);
+        if (v > mx) mx = v;
+      }
+      let s = 0;
+      for (let j = 0; j < n; j++) {
+        s += Math.exp(g[j]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(nu[j]!) - mx);
+      }
+      f[i] = -SINKHORN_EPS * (Math.log(s) + mx);
+    }
+
+    // Update g
+    for (let j = 0; j < n; j++) {
+      let mx = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const v = f[i]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(mu[i]!);
+        if (v > mx) mx = v;
+      }
+      let s = 0;
+      for (let i = 0; i < n; i++) {
+        s += Math.exp(f[i]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(mu[i]!) - mx);
+      }
+      g[j] = -SINKHORN_EPS * (Math.log(s) + mx);
+    }
+  }
+
+  // OT_eps(mu, nu) = <f, mu> + <g, nu>
+  let ot = 0;
+  for (let i = 0; i < n; i++) {
+    ot += f[i]! * mu[i]! + g[i]! * nu[i]!;
+  }
+
+  // Total mass penalty (unnormalized)
+  const massDiff = sumA - sumB;
+  return ot + MASS_PENALTY * massDiff * massDiff;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +197,7 @@ function computeLoss(
   closenessWeight: number,
   dissWeight: number
 ): number {
-  return dissWeight * poolDissonance(amps) + closenessWeight * ampMSE(amps, ref);
+  return dissWeight * poolDissonance(amps) + closenessWeight * sinkhornDivergence(amps, ref);
 }
 
 function optimizeStep(
@@ -163,7 +239,7 @@ export default function DissonanceMeter() {
   let closeValueEl!: HTMLSpanElement;
 
   const [optimizing, setOptimizing] = createSignal(false);
-  const [lr, setLr] = createSignal(0.001);
+  const [lr, setLr] = createSignal(0.1);
   const [closeness, setCloseness] = createSignal(50);
   const [dissOn, setDissOn] = createSignal(true);
 
@@ -250,7 +326,7 @@ export default function DissonanceMeter() {
       dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Closeness (Wasserstein)
-      const w = ampMSE(spectrum(), referenceSpectrum());
+      const w = sinkhornDivergence(spectrum(), referenceSpectrum());
       closeHistory.push(w);
       if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
       if (w > closeMax) closeMax = w;
