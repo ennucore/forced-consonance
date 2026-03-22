@@ -23,17 +23,30 @@ function buildPartials(
 
   if (windowSemitones <= 0) return raw;
 
-  const kept: { freq: number; amp: number }[] = [];
+  // Group nearby partials: merge by summing amplitudes and averaging pitch
+  // (amplitude-weighted average frequency), preserving total energy (amp^2).
+  const groups: { freqs: number[]; amps: number[] }[] = [];
   for (const partial of raw) {
-    const tooClose = kept.some((k) => {
-      const ratio = Math.abs(Math.log2(partial.freq / k.freq));
-      return ratio < windowSemitones / 12;
+    const match = groups.find((g) => {
+      const gFreq = g.freqs.reduce((s, f, i) => s + f * g.amps[i]!, 0)
+        / g.amps.reduce((s, a) => s + a, 0);
+      return Math.abs(Math.log2(partial.freq / gFreq)) < windowSemitones / 12;
     });
-    if (!tooClose) {
-      kept.push(partial);
+    if (match) {
+      match.freqs.push(partial.freq);
+      match.amps.push(partial.amp);
+    } else {
+      groups.push({ freqs: [partial.freq], amps: [partial.amp] });
     }
   }
-  return kept;
+
+  return groups.map((g) => {
+    const totalAmp = g.amps.reduce((s, a) => s + a, 0);
+    const avgFreq = g.freqs.reduce((s, f, i) => s + f * g.amps[i]!, 0) / totalAmp;
+    // Preserve total energy: sum of amp^2
+    const energy = g.amps.reduce((s, a) => s + a * a, 0);
+    return { freq: avgFreq, amp: Math.sqrt(energy) };
+  });
 }
 
 interface Voice {
