@@ -106,6 +106,38 @@ function kernel(x: number): number {
 }
 
 /**
+ * Compute total dissonance for a set of fundamentals with the given overtone
+ * amplitudes. Sums pairwise roughness across all pairs of fundamentals.
+ * Returns 0 if fewer than 2 notes are playing.
+ */
+export function computeChordDissonance(
+  amps: number[],
+  fundamentals: number[]
+): number {
+  if (fundamentals.length < 2) return 0;
+
+  let total = 0;
+  for (let a = 0; a < fundamentals.length; a++) {
+    for (let b = a + 1; b < fundamentals.length; b++) {
+      const ratio = fundamentals[b]! / fundamentals[a]!;
+      // Sum pairwise partial roughness for this interval
+      for (let i = 0; i < amps.length; i++) {
+        const wi = amps[i]!;
+        if (wi === 0) continue;
+        const fi = i + 1;
+        for (let j = 0; j < amps.length; j++) {
+          const wj = amps[j]!;
+          if (wj === 0) continue;
+          const fj = (j + 1) * ratio;
+          total += wi * wj * kernel(fj / fi - 1);
+        }
+      }
+    }
+  }
+  return total;
+}
+
+/**
  * Compute the Sethares sensory-dissonance curve for a complex tone played
  * against itself transposed by ratio r.
  */

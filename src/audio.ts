@@ -35,6 +35,10 @@ type RenderedPartial = { freq: number; amp: number };
 // so preset/editor changes apply immediately.
 const activeNotes = new Map<string, number>();
 
+export function getActiveFundamentals(): number[] {
+  return Array.from(activeNotes.values());
+}
+
 function buildChordPartials(): RenderedPartial[] {
   const fundamentals = Array.from(activeNotes.values()).sort((a, b) => a - b);
   if (fundamentals.length === 0) return [];

@@ -202,6 +202,40 @@ h1 {
 }
 
 /* ------------------------------------------------------------------ */
+/* Dissonance meter                                                    */
+/* ------------------------------------------------------------------ */
+
+.dissonance-meter {
+  background: var(--bg-light);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.meter-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meter-value {
+  font-size: 1.1rem;
+  font-weight: 400;
+  color: var(--red);
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+  text-align: right;
+}
+
+.dissonance-meter canvas {
+  display: block;
+  border-radius: 4px;
+}
+
+/* ------------------------------------------------------------------ */
 /* Spectrum analyser                                                   */
 /* ------------------------------------------------------------------ */
 
