@@ -26,87 +26,79 @@ export function getAnalyser(): AnalyserNode {
 }
 
 // ---------------------------------------------------------------------------
-// Raw partials per note (full harmonic series, never deduped internally)
+// Chord partial construction
 // ---------------------------------------------------------------------------
 
-const activeNotes = new Map<string, { freq: number; amp: number; fundamental: number }[]>();
+type RawPartial = { freq: number; amp: number; fundamental: number };
+type RenderedPartial = { freq: number; amp: number };
 
-function rawPartials(fundamentalHz: number, amps: number[]): { freq: number; amp: number; fundamental: number }[] {
-  const out: { freq: number; amp: number; fundamental: number }[] = [];
+// Active notes are stored as fundamentals; the overtone stack is rebuilt
+// on every render so preset/editor changes apply immediately.
+const activeNotes = new Map<string, number>();
+
+function rawPartials(fundamentalHz: number, amps: number[]): RawPartial[] {
+  const out: RawPartial[] = [];
   for (let i = 0; i < amps.length; i++) {
-    const a = amps[i]!;
-    if (a === 0) continue;
-    const f = fundamentalHz * (i + 1);
-    if (f > 20000) break;
-    out.push({ freq: f, amp: a, fundamental: fundamentalHz });
+    const amp = amps[i]!;
+    if (amp === 0) continue;
+    const freq = fundamentalHz * (i + 1);
+    if (freq > 20000) break;
+    out.push({ freq, amp, fundamental: fundamentalHz });
   }
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Cross-note merge: pool all partials across notes, merge only across
-// different fundamentals. Walk from highest frequency down so high overtones
-// merge first. Fundamentals and their octave multiples are never merged.
-// ---------------------------------------------------------------------------
-
-// Check if freq is a power-of-2 multiple (octave) of any active fundamental
-function isOctaveOfFundamental(freq: number): boolean {
-  for (const partials of activeNotes.values()) {
-    const f0 = partials[0]?.fundamental;
-    if (!f0) continue;
-    const ratio = freq / f0;
-    if (ratio >= 1 && Math.abs(Math.log2(ratio) - Math.round(Math.log2(ratio))) < 0.01) {
-      return true;
-    }
-  }
-  return false;
+function minimumSeparationHz(freq: number, windowSemitones: number): number {
+  return freq * (Math.pow(2, windowSemitones / 12) - 1);
 }
 
-function mergeAcrossNotes(windowSemitones: number): { freq: number; amp: number }[] {
-  const tagged: { freq: number; amp: number; note: string; protected_: boolean }[] = [];
-  for (const [note, partials] of activeNotes) {
-    for (const p of partials) {
-      tagged.push({ freq: p.freq, amp: p.amp, note, protected_: isOctaveOfFundamental(p.freq) });
-    }
-  }
+function isTooCloseToAcceptedOvertone(
+  candidateFreq: number,
+  acceptedOvertones: number[],
+  windowSemitones: number,
+): boolean {
+  if (windowSemitones <= 0) return false;
 
-  if (windowSemitones <= 0 || tagged.length === 0) {
-    return tagged.map(({ freq, amp }) => ({ freq, amp }));
-  }
+  return acceptedOvertones.some((acceptedFreq) => {
+    const threshold = minimumSeparationHz(
+      Math.min(acceptedFreq, candidateFreq),
+      windowSemitones,
+    );
+    return Math.abs(candidateFreq - acceptedFreq) < threshold;
+  });
+}
 
-  // Sort descending by frequency — merge from top
-  tagged.sort((a, b) => b.freq - a.freq);
+function buildChordPartials(windowSemitones: number): RenderedPartial[] {
+  const fundamentals = Array.from(activeNotes.values()).sort((a, b) => a - b);
+  if (fundamentals.length === 0) return [];
 
-  const result: { freq: number; amp: number }[] = [];
-  const used = new Set<number>();
+  const amps = overtoneAmps();
+  const fundamentalAmp = amps[0] ?? 1;
 
-  for (let i = 0; i < tagged.length; i++) {
-    if (used.has(i)) continue;
-    used.add(i);
+  const accepted: RenderedPartial[] = fundamentals.map((freq) => ({
+    freq,
+    amp: fundamentalAmp,
+  }));
+  const acceptedOvertones: number[] = [];
 
-    // Protected partials never merge
-    if (tagged[i]!.protected_) {
-      result.push({ freq: tagged[i]!.freq, amp: tagged[i]!.amp });
-      continue;
-    }
+  for (let i = 1; i < amps.length; i++) {
+    const amp = amps[i]!;
+    if (amp === 0) continue;
 
-    // Keep this partial, discard any from other notes within the window
-    result.push({ freq: tagged[i]!.freq, amp: tagged[i]!.amp });
-
-    for (let j = i + 1; j < tagged.length; j++) {
-      if (used.has(j)) continue;
-      const c = tagged[j]!;
-
-      if (c.protected_) continue;
-      if (c.note === tagged[i]!.note) continue;
-
-      if (Math.abs(Math.log2(c.freq / tagged[i]!.freq)) < windowSemitones / 12) {
-        used.add(j); // discard
+    const harmonic = i + 1;
+    for (const fundamental of fundamentals) {
+      const freq = fundamental * harmonic;
+      if (freq > 20000) break;
+      if (isTooCloseToAcceptedOvertone(freq, acceptedOvertones, windowSemitones)) {
+        continue;
       }
+
+      accepted.push({ freq, amp });
+      acceptedOvertones.push(freq);
     }
   }
 
-  return result;
+  return accepted;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +112,6 @@ function renderAll() {
   const audio = getCtx();
   const now = audio.currentTime;
 
-  // Quick crossfade out old render
   if (rendered) {
     const old = rendered;
     old.master.gain.cancelScheduledValues(now);
@@ -130,7 +121,7 @@ function renderAll() {
     rendered = null;
   }
 
-  const partials = mergeAcrossNotes(currentWindow);
+  const partials = buildChordPartials(currentWindow);
   if (partials.length === 0) return;
 
   const master = audio.createGain();
@@ -140,14 +131,14 @@ function renderAll() {
 
   const oscs: OscillatorNode[] = [];
 
-  for (const p of partials) {
+  for (const partial of partials) {
     const osc = audio.createOscillator();
     osc.type = "sine";
-    osc.frequency.value = p.freq;
+    osc.frequency.value = partial.freq;
 
     const gain = audio.createGain();
-    gain.gain.setValueAtTime(p.amp, now);
-    gain.gain.exponentialRampToValueAtTime(p.amp * 0.6, now + 0.3);
+    gain.gain.setValueAtTime(partial.amp, now);
+    gain.gain.exponentialRampToValueAtTime(partial.amp * 0.6, now + 0.3);
 
     osc.connect(gain);
     gain.connect(master);
@@ -158,14 +149,19 @@ function renderAll() {
   rendered = { oscs, master };
 }
 
-// ---------------------------------------------------------------------------
-// Note on/off (piano keyboard)
-// ---------------------------------------------------------------------------
+export function setConsonanceWindow(windowSemitones: number) {
+  currentWindow = windowSemitones;
+  if (activeNotes.size > 0) renderAll();
+}
+
+export function refreshActiveNotes() {
+  if (activeNotes.size > 0) renderAll();
+}
 
 export function noteOn(note: string, freq: number, windowSemitones: number) {
   if (activeNotes.has(note)) return;
   currentWindow = windowSemitones;
-  activeNotes.set(note, rawPartials(freq, overtoneAmps()));
+  activeNotes.set(note, freq);
   renderAll();
 }
 
@@ -209,15 +205,15 @@ function startVoice(freq: number, amps: number[]): Voice {
 
   const oscillators: OscillatorNode[] = [];
 
-  for (const p of partials) {
+  for (const partial of partials) {
     const osc = audio.createOscillator();
     osc.type = "sine";
-    osc.frequency.value = p.freq;
+    osc.frequency.value = partial.freq;
 
     const gain = audio.createGain();
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(p.amp, now + 0.005);
-    gain.gain.exponentialRampToValueAtTime(p.amp * 0.6, now + 0.3);
+    gain.gain.linearRampToValueAtTime(partial.amp, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(partial.amp * 0.6, now + 0.3);
 
     osc.connect(gain);
     gain.connect(master);
