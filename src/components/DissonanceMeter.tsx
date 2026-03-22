@@ -97,131 +97,191 @@ function poolDissonance(amps: Float64Array): number {
 }
 
 // ---------------------------------------------------------------------------
-// Sinkhorn divergence for closeness (smooth optimal transport)
+// 1D Optimal Transport: displacement interpolation
 // ---------------------------------------------------------------------------
 //
-// Entropy-regularized OT: smooth gradients that "know" how to slide peaks.
-// Cost = squared semitone distance. ε controls blur (larger = smoother).
-// Includes total mass penalty so amplitude changes are penalized.
+// Instead of using a loss function for closeness, directly compute the
+// optimal transport map between current and reference, then move each
+// mass particle a fraction of the way toward its destination.
+// This physically slides peaks along the frequency axis.
 
-const SINKHORN_EPS = 4;     // regularization strength (semitones²)
-const SINKHORN_ITERS = 15;
-const MASS_PENALTY = 5;
+function transportStep(
+  current: Float64Array,
+  ref: Float64Array,
+  alpha: number // fraction to move toward reference (0 = stay, 1 = snap)
+): Float64Array {
+  const n = current.length;
 
-// Precompute log-kernel: logK[i*n+j] = -(i-j)² / eps
-const _logK = new Float64Array(SPECTRUM_SIZE * SPECTRUM_SIZE);
-for (let i = 0; i < SPECTRUM_SIZE; i++) {
-  for (let j = 0; j < SPECTRUM_SIZE; j++) {
-    const d = i - j;
-    _logK[i * SPECTRUM_SIZE + j] = -(d * d) / SINKHORN_EPS;
-  }
-}
-
-function sinkhornDivergence(a: Float64Array, b: Float64Array): number {
-  const n = SPECTRUM_SIZE;
-  const bg = 1e-8;
-
-  // Build measures with background, track total mass
-  const mu = new Float64Array(n);
-  const nu = new Float64Array(n);
-  let sumA = 0, sumB = 0;
+  let totalCur = 0, totalRef = 0;
   for (let i = 0; i < n; i++) {
-    mu[i] = a[i]! + bg;
-    nu[i] = b[i]! + bg;
-    sumA += mu[i]!;
-    sumB += nu[i]!;
+    totalCur += current[i]!;
+    totalRef += ref[i]!;
   }
-  // Normalize to probability for Sinkhorn
+
+  // Edge cases: one or both empty
+  if (totalCur < 1e-10 && totalRef < 1e-10) return new Float64Array(n);
+  if (totalCur < 1e-10) {
+    // No current mass — fade in reference
+    const result = new Float64Array(n);
+    for (let i = 0; i < n; i++) result[i] = ref[i]! * alpha;
+    return result;
+  }
+  if (totalRef < 1e-10) {
+    // No reference — fade out current
+    const result = new Float64Array(n);
+    for (let i = 0; i < n; i++) result[i] = current[i]! * (1 - alpha);
+    return result;
+  }
+
+  // Normalize to equal mass for quantile matching
+  const curNorm = new Float64Array(n);
+  const refNorm = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    mu[i] /= sumA;
-    nu[i] /= sumB;
+    curNorm[i] = current[i]! / totalCur;
+    refNorm[i] = ref[i]! / totalRef;
   }
 
-  // Log-domain Sinkhorn iterations
-  const f = new Float64Array(n);
-  const g = new Float64Array(n);
+  // Build CDFs
+  const cdfCur = new Float64Array(n);
+  const cdfRef = new Float64Array(n);
+  cdfCur[0] = curNorm[0]!;
+  cdfRef[0] = refNorm[0]!;
+  for (let i = 1; i < n; i++) {
+    cdfCur[i] = cdfCur[i - 1]! + curNorm[i]!;
+    cdfRef[i] = cdfRef[i - 1]! + refNorm[i]!;
+  }
 
-  for (let iter = 0; iter < SINKHORN_ITERS; iter++) {
-    // Update f: f_i = -eps * logsumexp_j((g_j + logK_ij)/eps + log(nu_j))
-    //         simplified: f_i = -eps * logsumexp_j(g_j/eps + logK_ij/eps ... )
-    // Actually: f_i = -eps * logsumexp_j( (g_j - C_ij)/eps + log(nu_j) )
-    // where logK_ij = -C_ij/eps, so (g_j - C_ij)/eps = g_j/eps + logK_ij
-    for (let i = 0; i < n; i++) {
-      let mx = -Infinity;
-      for (let j = 0; j < n; j++) {
-        const v = g[j]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(nu[j]!);
-        if (v > mx) mx = v;
-      }
-      let s = 0;
-      for (let j = 0; j < n; j++) {
-        s += Math.exp(g[j]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(nu[j]!) - mx);
-      }
-      f[i] = -SINKHORN_EPS * (Math.log(s) + mx);
-    }
+  // For each bin with mass in current, find its transport destination
+  // via quantile matching, then interpolate position
+  const result = new Float64Array(n);
 
-    // Update g
+  for (let i = 0; i < n; i++) {
+    if (curNorm[i]! < 1e-12) continue;
+
+    // Quantile midpoint of this bin's mass
+    const qMid = (i > 0 ? cdfCur[i - 1]! : 0) + curNorm[i]! / 2;
+
+    // Find target: inverse CDF of reference at this quantile
+    let target = 0;
     for (let j = 0; j < n; j++) {
-      let mx = -Infinity;
-      for (let i = 0; i < n; i++) {
-        const v = f[i]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(mu[i]!);
-        if (v > mx) mx = v;
-      }
-      let s = 0;
-      for (let i = 0; i < n; i++) {
-        s += Math.exp(f[i]! / SINKHORN_EPS + _logK[i * n + j]! + Math.log(mu[i]!) - mx);
-      }
-      g[j] = -SINKHORN_EPS * (Math.log(s) + mx);
+      if (cdfRef[j]! >= qMid) { target = j; break; }
+      target = j;
     }
+
+    // Interpolate position between current and target
+    const newPos = (1 - alpha) * i + alpha * target;
+
+    // Distribute mass to nearest bins (linear interpolation on grid)
+    const lo = Math.floor(newPos);
+    const hi = lo + 1;
+    const frac = newPos - lo;
+    const mass = curNorm[i]!;
+
+    if (lo >= 0 && lo < n) result[lo] += mass * (1 - frac);
+    if (hi >= 0 && hi < n) result[hi] += mass * frac;
   }
 
-  // OT_eps(mu, nu) = <f, mu> + <g, nu>
-  let ot = 0;
-  for (let i = 0; i < n; i++) {
-    ot += f[i]! * mu[i]! + g[i]! * nu[i]!;
-  }
+  // Scale to interpolated total mass
+  const targetTotal = (1 - alpha) * totalCur + alpha * totalRef;
+  for (let i = 0; i < n; i++) result[i] *= targetTotal;
 
-  // Total mass penalty (unnormalized)
-  const massDiff = sumA - sumB;
-  return ot + MASS_PENALTY * massDiff * massDiff;
+  return result;
+}
+
+// Amplitude MSE for display only
+function ampMSE(a: Float64Array, b: Float64Array): number {
+  let mse = 0;
+  for (let i = 0; i < SPECTRUM_SIZE; i++) {
+    const diff = a[i]! - b[i]!;
+    mse += diff * diff;
+  }
+  return mse / SPECTRUM_SIZE;
 }
 
 // ---------------------------------------------------------------------------
-// Adam optimizer on pool amplitudes
+// Adam optimizer — dissonance reduction only
 // ---------------------------------------------------------------------------
 //
-// Adam prevents oscillation: when a parameter's gradient alternates sign
-// (dissonance pushes down, closeness pushes up), momentum averages toward
-// zero and variance grows, automatically shrinking the effective step size
-// for that parameter.
+// Closeness is handled by the transport step (no gradient needed).
+// Adam only optimizes the dissonance term, so there are no competing
+// objectives and no oscillation.
 
 const GRAD_DELTA = 1e-4;
 const ADAM_BETA1 = 0.9;
 const ADAM_BETA2 = 0.999;
 const ADAM_EPS = 1e-8;
 
-// Adam state — reset when optimizer starts or reference changes
 let adamM: Float64Array | null = null;
 let adamV: Float64Array | null = null;
 let adamT = 0;
-let lastRefId = 0; // track reference changes
 
 function resetAdam() {
   adamM = new Float64Array(SPECTRUM_SIZE);
   adamV = new Float64Array(SPECTRUM_SIZE);
   adamT = 0;
-  lastRefId++;
 }
 
-function computeLoss(
+// ---------------------------------------------------------------------------
+// Mode A: Transport + dissonance-only Adam (no competing objectives)
+// ---------------------------------------------------------------------------
+
+function optimizeStepTransport(
+  current: Float64Array,
+  ref: Float64Array,
+  lr: number,
+  transportAlpha: number,
+  dissWeight: number
+): Float64Array {
+  const n = current.length;
+
+  // Step 1: Transport — slide spectrum toward reference
+  const transported = transportStep(current, ref, transportAlpha);
+
+  // Step 2: Dissonance gradient (Adam) on the transported result
+  if (dissWeight <= 0) return transported;
+
+  if (!adamM || adamM.length !== n) resetAdam();
+  adamT++;
+
+  const baseDiss = poolDissonance(transported);
+  const grad = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    if (transported[i]! < 1e-6) continue;
+
+    const perturbed = new Float64Array(transported);
+    perturbed[i] += GRAD_DELTA;
+    grad[i] = (poolDissonance(perturbed) - baseDiss) / GRAD_DELTA;
+  }
+
+  const result = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    adamM![i] = ADAM_BETA1 * adamM![i]! + (1 - ADAM_BETA1) * grad[i]!;
+    adamV![i] = ADAM_BETA2 * adamV![i]! + (1 - ADAM_BETA2) * grad[i]! * grad[i]!;
+
+    const mHat = adamM![i]! / (1 - Math.pow(ADAM_BETA1, adamT));
+    const vHat = adamV![i]! / (1 - Math.pow(ADAM_BETA2, adamT));
+
+    result[i] = Math.max(0, transported[i]! - lr * mHat / (Math.sqrt(vHat) + ADAM_EPS));
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Mode B: Joint loss (dissonance + MSE closeness) with Adam
+// ---------------------------------------------------------------------------
+
+function jointLoss(
   amps: Float64Array,
   ref: Float64Array,
   closenessWeight: number,
   dissWeight: number
 ): number {
-  return dissWeight * poolDissonance(amps) + closenessWeight * sinkhornDivergence(amps, ref);
+  return dissWeight * poolDissonance(amps) + closenessWeight * ampMSE(amps, ref);
 }
 
-function optimizeStep(
+function optimizeStepJoint(
   current: Float64Array,
   ref: Float64Array,
   lr: number,
@@ -230,13 +290,10 @@ function optimizeStep(
 ): Float64Array {
   const n = current.length;
 
-  // Initialize Adam state if needed
   if (!adamM || adamM.length !== n) resetAdam();
-
   adamT++;
 
-  // Compute gradient
-  const loss = computeLoss(current, ref, closenessWeight, dissWeight);
+  const loss = jointLoss(current, ref, closenessWeight, dissWeight);
   const grad = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
@@ -244,10 +301,9 @@ function optimizeStep(
 
     const perturbed = new Float64Array(current);
     perturbed[i] += GRAD_DELTA;
-    grad[i] = (computeLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
+    grad[i] = (jointLoss(perturbed, ref, closenessWeight, dissWeight) - loss) / GRAD_DELTA;
   }
 
-  // Adam update
   const result = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     adamM![i] = ADAM_BETA1 * adamM![i]! + (1 - ADAM_BETA1) * grad[i]!;
@@ -274,8 +330,9 @@ export default function DissonanceMeter() {
 
   const [optimizing, setOptimizing] = createSignal(false);
   const [lr, setLr] = createSignal(0.1);
-  const [closeness, setCloseness] = createSignal(50);
+  const [closeness, setCloseness] = createSignal(0.1);
   const [dissOn, setDissOn] = createSignal(true);
+  const [mode, setMode] = createSignal<"transport" | "joint">("transport");
 
   let optimizeIntervalId = 0;
 
@@ -287,26 +344,19 @@ export default function DissonanceMeter() {
 
   const OPTIMIZE_INTERVAL = 125; // ~8 steps/sec
 
-  let prevRefSnapshot = "";
-
   function startOptimize() {
     setOptimizing(true);
     setOptimizerActive(true);
     resetAdam();
-    prevRefSnapshot = referenceSpectrum().toString();
 
     optimizeIntervalId = window.setInterval(() => {
       const current = spectrum();
       const ref = referenceSpectrum();
 
-      // Reset Adam if reference changed (new chord)
-      const refSnap = ref.toString();
-      if (refSnap !== prevRefSnapshot) {
-        resetAdam();
-        prevRefSnapshot = refSnap;
-      }
-
-      const updated = optimizeStep(current, ref, lr(), closeness(), dissOn() ? 1 : 0);
+      const dw = dissOn() ? 1 : 0;
+      const updated = mode() === "transport"
+        ? optimizeStepTransport(current, ref, lr(), closeness(), dw)
+        : optimizeStepJoint(current, ref, lr(), closeness(), dw);
       updateSpectrum(updated);
     }, OPTIMIZE_INTERVAL);
   }
@@ -372,7 +422,7 @@ export default function DissonanceMeter() {
       dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Closeness (Wasserstein)
-      const w = sinkhornDivergence(spectrum(), referenceSpectrum());
+      const w = ampMSE(spectrum(), referenceSpectrum());
       closeHistory.push(w);
       if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
       if (w > closeMax) closeMax = w;
@@ -425,6 +475,12 @@ export default function DissonanceMeter() {
         >
           diss
         </button>
+        <button
+          class="optimize-btn"
+          onClick={() => { setMode(mode() === "transport" ? "joint" : "transport"); resetAdam(); }}
+        >
+          {mode() === "transport" ? "OT" : "MSE"}
+        </button>
         <label class="lr-control">
           lr:
           <input
@@ -438,16 +494,18 @@ export default function DissonanceMeter() {
           <span class="lr-value">{lr().toFixed(4)}</span>
         </label>
         <label class="lr-control">
-          close:
+          {mode() === "transport" ? "slide:" : "close:"}
           <input
             type="range"
             min="0"
-            max="200"
-            step="1"
+            max={mode() === "transport" ? "1" : "200"}
+            step={mode() === "transport" ? "0.01" : "1"}
             value={closeness()}
             onInput={(e) => setCloseness(parseFloat(e.currentTarget.value))}
           />
-          <span class="lr-value">{closeness().toFixed(0)}</span>
+          <span class="lr-value">
+            {mode() === "transport" ? closeness().toFixed(2) : closeness().toFixed(0)}
+          </span>
         </label>
       </div>
     </div>
