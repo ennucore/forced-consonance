@@ -310,6 +310,17 @@ export function playTriad(baseFreq: number, r1: number, r2: number) {
   ];
 }
 
+export function playTetrad(baseFreq: number, r1: number, r2: number, r3: number) {
+  stopInterval();
+  const amps = overtoneAmps();
+  intervalVoices = [
+    startVoice(baseFreq, amps),
+    startVoice(baseFreq * r1, amps),
+    startVoice(baseFreq * r2, amps),
+    startVoice(baseFreq * r3, amps),
+  ];
+}
+
 export function stopInterval() {
   const audio = getCtx();
   const now = audio.currentTime;
