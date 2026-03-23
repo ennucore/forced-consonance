@@ -660,11 +660,9 @@ function step() {
 
   for (let i = 0; i < MATCH_STEPS_PER_TICK; i++) {
     matchAdamStep(targets);
-    mergeClosePeaks();
   }
   for (let i = 0; i < DISS_STEPS_PER_TICK; i++) {
     dissAdamStep(targets, desiredDiss);
-    mergeClosePeaks();
   }
   const result = objective(targets, desiredDiss);
   pushHistory(setDissHistory, result.diss);
