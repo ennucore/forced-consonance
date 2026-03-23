@@ -22,7 +22,9 @@ export function getHarmonics(): number[] {
 // Waveform presets
 // ---------------------------------------------------------------------------
 
-export type WaveformPreset = "sawtooth" | "sine" | "square" | "triangle" | "string" | "piano";
+export type WaveformPreset =
+  | "sawtooth" | "sine" | "square" | "triangle" | "string" | "piano"
+  | "clarinet" | "oboe" | "brass" | "flute" | "bell" | "organ" | "vowelA" | "vowelE";
 
 function sawtoothAmps(): number[] {
   return Array.from({ length: OVERTONE_COUNT }, (_, i) => 1 / (i + 1));
@@ -70,6 +72,87 @@ function pianoAmps(): number[] {
   return raw.map((a) => a / max);
 }
 
+// Clarinet: strong odd harmonics, weak even (cylindrical bore)
+function clarinetAmps(): number[] {
+  return Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    if (n % 2 === 0) return 0.05 / n;
+    return 1 / n;
+  });
+}
+
+// Oboe: all harmonics present, peaked around 3rd-5th, gradual rolloff
+function oboeAmps(): number[] {
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    return Math.exp(-0.3 * (n - 3) * (n - 3)) / n;
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => a / max);
+}
+
+// Brass: strong low harmonics with formant bump around 8th-10th
+function brassAmps(): number[] {
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    const base = 1 / n;
+    const formant = 0.5 * Math.exp(-0.5 * (n - 9) * (n - 9));
+    return base + formant;
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => a / max);
+}
+
+// Flute: very strong fundamental, weak upper harmonics
+function fluteAmps(): number[] {
+  return Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    return Math.exp(-0.8 * (n - 1));
+  });
+}
+
+// Bell: inharmonic-ish but approximated on harmonic grid, sharp attack profile
+function bellAmps(): number[] {
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    // Bells have energy at scattered partials
+    return (1 / Math.sqrt(n)) * (1 + 0.5 * Math.sin(n * 1.7));
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => Math.max(0, a / max));
+}
+
+// Organ: equal amplitude for all harmonics (additive registration)
+function organAmps(): number[] {
+  return Array.from({ length: OVERTONE_COUNT }, () => 1);
+}
+
+// Vowel "A" (as in "father"): formants at ~800Hz and ~1200Hz
+// Approximated as emphasis on harmonics 3-5 relative to a 220Hz fundamental
+function vowelAAmps(): number[] {
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    const f1 = Math.exp(-2 * (n - 3.5) * (n - 3.5));
+    const f2 = 0.6 * Math.exp(-2 * (n - 5.5) * (n - 5.5));
+    return (f1 + f2 + 0.1) / n;
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => a / max);
+}
+
+// Vowel "E" (as in "see"): formants at ~300Hz and ~2500Hz
+// Emphasis on harmonics 1-2 and 10-12
+function vowelEAmps(): number[] {
+  const raw = Array.from({ length: OVERTONE_COUNT }, (_, i) => {
+    const n = i + 1;
+    const f1 = Math.exp(-2 * (n - 1.5) * (n - 1.5));
+    const f2 = 0.5 * Math.exp(-1 * (n - 11) * (n - 11));
+    return (f1 + f2 + 0.05) / n;
+  });
+  const max = Math.max(...raw);
+  return raw.map((a) => a / max);
+}
+
 // ---------------------------------------------------------------------------
 // Reactive overtone state
 // ---------------------------------------------------------------------------
@@ -81,15 +164,27 @@ export const [overtoneAmps, setOvertoneAmps] =
 // Preset application
 // ---------------------------------------------------------------------------
 
-export function applyPreset(preset: WaveformPreset): void {
+export function getPresetAmps(preset: WaveformPreset): number[] {
   switch (preset) {
-    case "sine": setOvertoneAmps(sineAmps()); break;
-    case "sawtooth": setOvertoneAmps(sawtoothAmps()); break;
-    case "square": setOvertoneAmps(squareAmps()); break;
-    case "triangle": setOvertoneAmps(triangleAmps()); break;
-    case "string": setOvertoneAmps(stringAmps()); break;
-    case "piano": setOvertoneAmps(pianoAmps()); break;
+    case "sine": return sineAmps();
+    case "sawtooth": return sawtoothAmps();
+    case "square": return squareAmps();
+    case "triangle": return triangleAmps();
+    case "string": return stringAmps();
+    case "piano": return pianoAmps();
+    case "clarinet": return clarinetAmps();
+    case "oboe": return oboeAmps();
+    case "brass": return brassAmps();
+    case "flute": return fluteAmps();
+    case "bell": return bellAmps();
+    case "organ": return organAmps();
+    case "vowelA": return vowelAAmps();
+    case "vowelE": return vowelEAmps();
   }
+}
+
+export function applyPreset(preset: WaveformPreset): void {
+  setOvertoneAmps(getPresetAmps(preset));
 }
 
 // ---------------------------------------------------------------------------

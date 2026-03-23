@@ -417,3 +417,32 @@ h1 {
   display: block;
 }
 
+.per-note-selectors {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.per-note-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: var(--fg-dim);
+}
+
+.per-note-label {
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.per-note-row select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid rgba(147, 146, 147, 0.2);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-family: inherit;
+  font-size: 0.65rem;
+}
+

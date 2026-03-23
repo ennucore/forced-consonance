@@ -1,5 +1,5 @@
-import { createEffect } from "solid-js";
-import { overtoneAmps } from "../overtones";
+import { createEffect, createSignal, For } from "solid-js";
+import { overtoneAmps, getPresetAmps, type WaveformPreset } from "../overtones";
 import { playTriad, stopInterval } from "../audio";
 
 const SIZE = 400; // resolution
@@ -15,15 +15,15 @@ function kernel(x: number): number {
   return 50 * absx * Math.exp(-(x * x) / KERNEL_A);
 }
 
-// Pairwise dissonance between two notes at a given frequency ratio
-function pairDiss(amps: number[], ratio: number): number {
+// Pairwise dissonance between two notes with (possibly different) timbres
+function pairDiss(ampsA: number[], ampsB: number[], ratio: number): number {
   let total = 0;
-  for (let i = 0; i < amps.length; i++) {
-    const wi = amps[i]!;
+  for (let i = 0; i < ampsA.length; i++) {
+    const wi = ampsA[i]!;
     if (wi === 0) continue;
     const fi = i + 1;
-    for (let j = 0; j < amps.length; j++) {
-      const wj = amps[j]!;
+    for (let j = 0; j < ampsB.length; j++) {
+      const wj = ampsB[j]!;
       if (wj === 0) continue;
       const fj = (j + 1) * ratio;
       total += wi * wj * kernel(fj / fi - 1);
@@ -50,14 +50,13 @@ function xyToLogFreqs(x: number, y: number): [number, number, number] {
   return [lf1, lf2, lf3];
 }
 
-// Triad dissonance from (x, y) on the sum-zero plane
-function planeDiss(amps: number[], x: number, y: number): number {
+// Triad dissonance from (x, y) on the sum-zero plane, with per-note timbres
+function planeDiss(a1: number[], a2: number[], a3: number[], x: number, y: number): number {
   const [lf1, lf2, lf3] = xyToLogFreqs(x, y);
-  // Ratios: f2/f1, f3/f1, f3/f2
   const r12 = Math.pow(2, lf2 - lf1);
   const r13 = Math.pow(2, lf3 - lf1);
   const r23 = Math.pow(2, lf3 - lf2);
-  return pairDiss(amps, r12) + pairDiss(amps, r13) + pairDiss(amps, r23);
+  return pairDiss(a1, a2, r12) + pairDiss(a1, a3, r13) + pairDiss(a2, a3, r23);
 }
 
 // Viridis-like colormap
@@ -84,7 +83,7 @@ function xyToPix(x: number, y: number): [number, number] {
 
 // Gradient descent to local minimum
 function findLocalMinimum(
-  amps: number[],
+  a1: number[], a2: number[], a3: number[],
   startX: number,
   startY: number,
   maxIter: number = 100,
@@ -96,9 +95,9 @@ function findLocalMinimum(
   const h = 1e-5;
 
   for (let i = 0; i < maxIter; i++) {
-    const d = planeDiss(amps, x, y);
-    const dx = (planeDiss(amps, x + h, y) - d) / h;
-    const dy = (planeDiss(amps, x, y + h) - d) / h;
+    const d = planeDiss(a1, a2, a3, x, y);
+    const dx = (planeDiss(a1, a2, a3, x + h, y) - d) / h;
+    const dy = (planeDiss(a1, a2, a3, x, y + h) - d) / h;
     const norm = Math.sqrt(dx * dx + dy * dy);
     if (norm < eps) break;
     x -= stepSize * dx / norm;
@@ -111,10 +110,28 @@ function findLocalMinimum(
 
 const BASE_FREQ = 220;
 
+const ALL_PRESETS: WaveformPreset[] = [
+  "sawtooth", "sine", "square", "triangle", "string", "piano",
+  "clarinet", "oboe", "brass", "flute", "bell", "organ", "vowelA", "vowelE",
+];
+
 export default function DissonanceHeatmap() {
   let canvas!: HTMLCanvasElement;
   let overlayCanvas!: HTMLCanvasElement;
   const clickedMinima: [number, number][] = [];
+
+  const [perNote, setPerNote] = createSignal(false);
+  const [preset1, setPreset1] = createSignal<WaveformPreset>("sawtooth");
+  const [preset2, setPreset2] = createSignal<WaveformPreset>("sawtooth");
+  const [preset3, setPreset3] = createSignal<WaveformPreset>("sawtooth");
+
+  function getAmps(): [number[], number[], number[]] {
+    if (!perNote()) {
+      const a = overtoneAmps();
+      return [a, a, a];
+    }
+    return [getPresetAmps(preset1()), getPresetAmps(preset2()), getPresetAmps(preset3())];
+  }
 
   function coordsFromMouse(e: MouseEvent): [number, number] {
     const rect = canvas.getBoundingClientRect();
@@ -171,15 +188,15 @@ export default function DissonanceHeatmap() {
 
   function handleMouseDown(e: MouseEvent) {
     const [cx, cy] = coordsFromMouse(e);
-    const amps = overtoneAmps();
-    const [x, y] = findLocalMinimum(amps, cx, cy);
+    const [a1, a2, a3] = getAmps();
+    const [x, y] = findLocalMinimum(a1, a2, a3, cx, cy);
     clickedMinima.push([x, y]);
     playFromXY(x, y);
     drawOverlay(x, y);
 
     const onMove = (ev: MouseEvent) => {
       const [cx, cy] = coordsFromMouse(ev);
-      const [x, y] = findLocalMinimum(amps, cx, cy);
+      const [x, y] = findLocalMinimum(a1, a2, a3, cx, cy);
       playFromXY(x, y);
       drawOverlay(x, y);
     };
@@ -194,7 +211,9 @@ export default function DissonanceHeatmap() {
   }
 
   createEffect(() => {
-    const amps = overtoneAmps();
+    // Subscribe to all reactive deps
+    overtoneAmps(); perNote(); preset1(); preset2(); preset3();
+    const [a1, a2, a3] = getAmps();
     const ctx = canvas.getContext("2d")!;
     const imgData = ctx.createImageData(SIZE, SIZE);
     const data = imgData.data;
@@ -206,7 +225,7 @@ export default function DissonanceHeatmap() {
     for (let py = 0; py < SIZE; py++) {
       for (let px = 0; px < SIZE; px++) {
         const [x, y] = pixToXY(px, py);
-        const d = planeDiss(amps, x, y);
+        const d = planeDiss(a1, a2, a3, x, y);
         values[py * SIZE + px] = d;
         if (d > maxD) maxD = d;
       }
@@ -301,7 +320,37 @@ export default function DissonanceHeatmap() {
     <div class="dissonance-heatmap">
       <div class="dissonance-header">
         <span class="panel-label">3-note dissonance (log f₁+f₂+f₃=0 plane) — click snaps to min</span>
+        <button
+          class={`preset-btn ${perNote() ? "active" : ""}`}
+          onClick={() => setPerNote(!perNote())}
+          style={{ padding: "2px 6px", "font-size": "0.6rem" }}
+        >
+          per-note
+        </button>
       </div>
+      {perNote() && (
+        <div class="per-note-selectors">
+          <For each={[
+            { label: "f₁", get: preset1, set: setPreset1 },
+            { label: "f₂", get: preset2, set: setPreset2 },
+            { label: "f₃", get: preset3, set: setPreset3 },
+          ]}>
+            {(note) => (
+              <label class="per-note-row">
+                <span class="per-note-label">{note.label}</span>
+                <select
+                  value={note.get()}
+                  onChange={(e) => note.set(e.currentTarget.value as WaveformPreset)}
+                >
+                  <For each={ALL_PRESETS}>
+                    {(p) => <option value={p}>{p}</option>}
+                  </For>
+                </select>
+              </label>
+            )}
+          </For>
+        </div>
+      )}
       <div style={{ position: "relative", width: "400px", height: "400px" }}>
         <canvas
           ref={canvas}

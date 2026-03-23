@@ -10,7 +10,10 @@ import {
   getHarmonics,
 } from "../overtones";
 
-const PRESETS: WaveformPreset[] = ["sine", "sawtooth", "square", "triangle", "string", "piano"];
+const PRESETS: WaveformPreset[] = [
+  "sine", "sawtooth", "square", "triangle", "string", "piano",
+  "clarinet", "oboe", "brass", "flute", "bell", "organ", "vowelA", "vowelE",
+];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
