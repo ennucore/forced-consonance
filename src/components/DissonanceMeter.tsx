@@ -489,7 +489,7 @@ export default function DissonanceMeter() {
         </div>
         <div class="meter-chart">
           <div class="meter-header">
-            <span class="panel-label">closeness</span>
+            <span class="panel-label">KL divergence</span>
             <span class="meter-value closeness-value" ref={closeValueEl}>—</span>
           </div>
           <canvas ref={closeCanvas} width={WIDTH} height={HEIGHT} />
@@ -512,7 +512,7 @@ export default function DissonanceMeter() {
           class="optimize-btn"
           onClick={() => { setMode(mode() === "transport" ? "joint" : "transport"); resetAdam(); }}
         >
-          {mode() === "transport" ? "OT" : "MSE"}
+          {mode() === "transport" ? "OT" : "KL"}
         </button>
         <label class="lr-control">
           lr:
@@ -527,7 +527,7 @@ export default function DissonanceMeter() {
           <span class="lr-value">{lr().toFixed(4)}</span>
         </label>
         <label class="lr-control">
-          {mode() === "transport" ? "slide:" : "close:"}
+          {mode() === "transport" ? "slide:" : "KL:"}
           <input
             type="range"
             min="0"
