@@ -225,12 +225,10 @@ export function noteOn(note: string, freq: number) {
   updateReference();
 
   if (!optimizerActive) {
-    // Snap playing spectrum to reference
     const ref = buildReference();
     setSpectrum(ref);
     applySpectrum(ref);
   }
-  // If optimizer is active, it will steer toward new reference
 }
 
 export function noteOff(note: string) {

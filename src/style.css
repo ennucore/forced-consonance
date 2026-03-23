@@ -393,3 +393,25 @@ h1 {
   border-radius: 4px;
 }
 
+/* ------------------------------------------------------------------ */
+/* Dissonance heatmap (3-note)                                         */
+/* ------------------------------------------------------------------ */
+
+.dissonance-heatmap {
+  background: var(--bg-light);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+.dissonance-heatmap canvas {
+  display: block;
+  border-radius: 4px;
+  image-rendering: pixelated;
+  width: 400px;
+  height: 400px;
+}
+

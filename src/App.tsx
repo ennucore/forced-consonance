@@ -5,6 +5,7 @@ import { overtoneAmps } from "./overtones";
 import { OvertoneEditor } from "./components/OvertoneEditor";
 import SpectrumAnalyser from "./components/SpectrumAnalyser";
 import DissonanceCurve from "./components/DissonanceCurve";
+import DissonanceHeatmap from "./components/DissonanceHeatmap";
 import DissonanceMeter from "./components/DissonanceMeter";
 
 const pianoKeys = buildKeys();
@@ -208,6 +209,7 @@ export default function App() {
         <SpectrumAnalyser />
       </div>
       <DissonanceCurve />
+      <DissonanceHeatmap />
     </div>
   );
 }
