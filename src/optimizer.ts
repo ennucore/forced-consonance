@@ -14,9 +14,9 @@ import {
 // ---------------------------------------------------------------------------
 
 export const [dissWeight, setDissWeight] = createSignal(2.0);
-export const [matchWeight, setMatchWeight] = createSignal(0.25);
-export const [freqLr, setFreqLr] = createSignal(0.0004);
-export const [energyLr, setEnergyLr] = createSignal(0.001);
+export const [matchWeight, setMatchWeight] = createSignal(0.1);
+export const [freqLr, setFreqLr] = createSignal(0.0013);
+export const [energyLr, setEnergyLr] = createSignal(0.0063);
 export const [targetDiss, setTargetDiss] = createSignal(0.0);
 export const [running, setRunning] = createSignal(false);
 
@@ -449,7 +449,6 @@ function matchGradients(targets: MatchTarget[]) {
 
 function evaluateDissObjective(
   peaks: SpectralPeak[],
-  targets: MatchTarget[],
   matches: PeakMatch[],
   targetDiss: number,
 ): {
@@ -458,27 +457,25 @@ function evaluateDissObjective(
   diss: number;
   loss: number;
 } {
-  const { resolvedMatches } = resolveMatches(peaks, targets, matches);
-  const currentDiss = peakDissonance(matchedPeaks(peaks, resolvedMatches));
+  const currentDiss = peakDissonance(matchedPeaks(peaks, matches));
   const dissGap = currentDiss - targetDiss;
   const diss = dissGap * dissGap;
 
   return {
     peaks,
-    matches: resolvedMatches,
+    matches,
     diss,
     loss: dissWeight() * diss,
   };
 }
 
-function dissObjective(targets: MatchTarget[], targetDiss: number) {
+function dissObjective(fixedMatches: PeakMatch[], targetDiss: number) {
   const peaks = peaksFromState();
-  const matches = solveMatching(peaks, targets);
-  return evaluateDissObjective(peaks, targets, matches, targetDiss);
+  return evaluateDissObjective(peaks, fixedMatches, targetDiss);
 }
 
-function dissGradients(targets: MatchTarget[], targetDiss: number) {
-  const base = dissObjective(targets, targetDiss);
+function dissGradients(fixedMatches: PeakMatch[], targetDiss: number) {
+  const base = dissObjective(fixedMatches, targetDiss);
   const baseMatches = base.matches;
   const freqGrad = new Float64Array(logFreqs.length);
   const energyGrad = new Float64Array(energies.length);
@@ -488,7 +485,7 @@ function dissGradients(targets: MatchTarget[], targetDiss: number) {
       const savedFreq = logFreqs[i]!;
       logFreqs[i] = savedFreq + LOG_FREQ_DELTA;
       freqGrad[i] = (
-        evaluateDissObjective(peaksFromState(), targets, baseMatches, targetDiss).loss - base.loss
+        evaluateDissObjective(peaksFromState(), baseMatches, targetDiss).loss - base.loss
       ) / LOG_FREQ_DELTA;
       logFreqs[i] = savedFreq;
     } else {
@@ -498,7 +495,7 @@ function dissGradients(targets: MatchTarget[], targetDiss: number) {
     const savedEnergy = energies[i]!;
     energies[i] = savedEnergy + ENERGY_DELTA;
     energyGrad[i] = (
-      evaluateDissObjective(peaksFromState(), targets, baseMatches, targetDiss).loss - base.loss
+      evaluateDissObjective(peaksFromState(), baseMatches, targetDiss).loss - base.loss
     ) / ENERGY_DELTA;
     energies[i] = savedEnergy;
   }
@@ -627,8 +624,8 @@ function matchAdamStep(targets: MatchTarget[]) {
   applyAdamStep(matchAdam, baseMatches, freqGrad, energyGrad);
 }
 
-function dissAdamStep(targets: MatchTarget[], targetDiss: number) {
-  const { baseMatches, freqGrad, energyGrad } = dissGradients(targets, targetDiss);
+function dissAdamStep(fixedMatches: PeakMatch[], targetDiss: number) {
+  const { baseMatches, freqGrad, energyGrad } = dissGradients(fixedMatches, targetDiss);
   applyAdamStep(dissAdam, baseMatches, freqGrad, energyGrad);
 }
 
@@ -661,8 +658,9 @@ function step() {
   for (let i = 0; i < MATCH_STEPS_PER_TICK; i++) {
     matchAdamStep(targets);
   }
+  const dissPhaseMatches = solveMatching(peaksFromState(), targets);
   for (let i = 0; i < DISS_STEPS_PER_TICK; i++) {
-    dissAdamStep(targets, desiredDiss);
+    dissAdamStep(dissPhaseMatches, desiredDiss);
   }
   const result = objective(targets, desiredDiss);
   pushHistory(setDissHistory, result.diss);
