@@ -1,5 +1,6 @@
 import { createEffect } from "solid-js";
 import { overtoneAmps } from "../overtones";
+import { playTriad, stopInterval } from "../audio";
 
 const R_MIN = 1.0;
 const R_MAX = 2.5;
@@ -57,8 +58,36 @@ function ratioToPos(r: number): number {
   return ((r - R_MIN) / (R_MAX - R_MIN)) * SIZE;
 }
 
+const BASE_FREQ = 220;
+
 export default function DissonanceHeatmap() {
   let canvas!: HTMLCanvasElement;
+
+  function ratiosFromMouse(e: MouseEvent): [number, number] {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    const r1 = R_MIN + (R_MAX - R_MIN) * x;
+    const r2 = R_MIN + (R_MAX - R_MIN) * (1 - y);
+    return [r1, r2];
+  }
+
+  function handleMouseDown(e: MouseEvent) {
+    const [r1, r2] = ratiosFromMouse(e);
+    playTriad(BASE_FREQ, r1, r2);
+
+    const onMove = (ev: MouseEvent) => {
+      const [r1, r2] = ratiosFromMouse(ev);
+      playTriad(BASE_FREQ, r1, r2);
+    };
+    const onUp = () => {
+      stopInterval();
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   createEffect(() => {
     const amps = overtoneAmps();
@@ -138,7 +167,13 @@ export default function DissonanceHeatmap() {
       <div class="dissonance-header">
         <span class="panel-label">3-note dissonance (base × r1 × r2)</span>
       </div>
-      <canvas ref={canvas} width={SIZE} height={SIZE} />
+      <canvas
+        ref={canvas}
+        width={SIZE}
+        height={SIZE}
+        onMouseDown={handleMouseDown}
+        style={{ cursor: "crosshair" }}
+      />
     </div>
   );
 }

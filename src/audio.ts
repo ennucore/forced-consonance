@@ -300,6 +300,16 @@ export function playInterval(baseFreq: number, ratio: number) {
   ];
 }
 
+export function playTriad(baseFreq: number, r1: number, r2: number) {
+  stopInterval();
+  const amps = overtoneAmps();
+  intervalVoices = [
+    startVoice(baseFreq, amps),
+    startVoice(baseFreq * r1, amps),
+    startVoice(baseFreq * r2, amps),
+  ];
+}
+
 export function stopInterval() {
   const audio = getCtx();
   const now = audio.currentTime;
