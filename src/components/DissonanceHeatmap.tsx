@@ -2,7 +2,7 @@ import { createEffect } from "solid-js";
 import { overtoneAmps } from "../overtones";
 import { playTriad, stopInterval } from "../audio";
 
-const SIZE = 200; // resolution
+const SIZE = 400; // resolution
 const SQRT2 = Math.SQRT2;
 const SQRT6 = Math.sqrt(6);
 
