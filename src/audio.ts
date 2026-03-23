@@ -20,7 +20,7 @@ export function getAnalyser(): AnalyserNode {
   if (!analyser) {
     analyser = audio.createAnalyser();
     analyser.fftSize = 4096;
-    analyser.smoothingTimeConstant = 0.8;
+    analyser.smoothingTimeConstant = 0.0;
     analyser.connect(audio.destination);
   }
   return analyser;
@@ -34,7 +34,7 @@ export function getAnalyser(): AnalyserNode {
 // The spectrum is just an amplitude array over this fixed grid.
 // Nothing is ever created or destroyed after init — only gains change.
 
-const POOL_MIN_MIDI = 24;  // C1 ~32 Hz
+const POOL_MIN_MIDI = 24; // C1 ~32 Hz
 const POOL_MAX_MIDI = 108; // C9 ~8372 Hz
 const POOL_SIZE = POOL_MAX_MIDI - POOL_MIN_MIDI + 1; // 85 semitones
 
@@ -61,17 +61,18 @@ function nearestPoolIndex(freq: number): number {
 // ---------------------------------------------------------------------------
 
 export const SPECTRUM_SIZE = POOL_SIZE;
-export function getPoolFreqs(): number[] { return POOL_FREQS; }
+export function getPoolFreqs(): number[] {
+  return POOL_FREQS;
+}
 
 // Current amplitudes being played
 export const [spectrum, setSpectrum] = createSignal<Float64Array>(
-  new Float64Array(POOL_SIZE)
+  new Float64Array(POOL_SIZE),
 );
 
 // Reference spectrum: what the current chord "should" sound like
-export const [referenceSpectrum, setReferenceSpectrum] = createSignal<Float64Array>(
-  new Float64Array(POOL_SIZE)
-);
+export const [referenceSpectrum, setReferenceSpectrum] =
+  createSignal<Float64Array>(new Float64Array(POOL_SIZE));
 
 // Dissonance delta — shared so MIDI pitch bend can control it
 export const [dissDelta, setDissDelta] = createSignal(2.5);
@@ -144,7 +145,11 @@ function updateReference() {
 // Audio pool: persistent oscillators
 // ---------------------------------------------------------------------------
 
-let pool: { oscs: OscillatorNode[]; gains: GainNode[]; master: GainNode } | null = null;
+let pool: {
+  oscs: OscillatorNode[];
+  gains: GainNode[];
+  master: GainNode;
+} | null = null;
 
 function ensurePool() {
   if (pool) return;
