@@ -47,8 +47,6 @@ const SPECTRUM_FREQS: number[] = Array.from({ length: SPECTRUM_SIZE }, (_, i) =>
   return SPECTRUM_MIN_FREQ * Math.pow(SPECTRUM_MAX_FREQ / SPECTRUM_MIN_FREQ, t);
 });
 
-export const [dissDelta, setDissDelta] = createSignal(2.5);
-
 export function getPoolFreqs(): number[] {
   return SPECTRUM_FREQS;
 }

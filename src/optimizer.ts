@@ -1,7 +1,6 @@
 import { createSignal } from "solid-js";
 import {
   type SpectralPeak,
-  dissDelta,
   getPoolFreqs,
   REFERENCE_PEAK_LIMIT,
   referenceSpectrum,
@@ -18,6 +17,7 @@ export const [dissWeight, setDissWeight] = createSignal(2.0);
 export const [matchWeight, setMatchWeight] = createSignal(0.25);
 export const [freqLr, setFreqLr] = createSignal(0.0004);
 export const [energyLr, setEnergyLr] = createSignal(0.001);
+export const [targetDiss, setTargetDiss] = createSignal(0.0);
 export const [running, setRunning] = createSignal(false);
 
 export const [dissHistory, setDissHistory] = createSignal<number[]>([]);
@@ -51,7 +51,8 @@ const OPTIMIZED_PEAK_COUNT = REFERENCE_PEAK_LIMIT;
 const MATCH_ENERGY_WEIGHT = 500;
 const UNMATCHED_ENERGY_WEIGHT = 4;
 const TARGET_BIN_THRESHOLD_RATIO = 1e-3;
-const OPTIMIZER_STEPS_PER_TICK = 10;
+const MATCH_STEPS_PER_TICK = 5;
+const DISS_STEPS_PER_TICK = 5;
 
 export type MatchTarget = {
   logFreq: number;
@@ -100,12 +101,8 @@ function peakDissonance(peaks: SpectralPeak[]): number {
   return total;
 }
 
-function targetDissonance(targets: MatchTarget[]): number {
-  const referencePeaks = targets.map((target) => ({
-    centerFreq: Math.pow(2, target.logFreq),
-    energy: target.energy,
-  }));
-  return Math.max(0, peakDissonance(referencePeaks) - dissDelta());
+function targetDissonance(): number {
+  return Math.max(0, targetDiss());
 }
 
 function spectrumEnergy(spectrum: Float64Array): number {
@@ -336,17 +333,13 @@ function peaksFromState(): SpectralPeak[] {
   return peaks;
 }
 
-function evaluateObjective(
+function resolveMatches(
   peaks: SpectralPeak[],
   targets: MatchTarget[],
   matches: PeakMatch[],
-  targetDiss: number,
 ): {
-  peaks: SpectralPeak[];
-  matches: PeakMatch[];
-  diss: number;
-  match: number;
-  loss: number;
+  resolvedMatches: PeakMatch[];
+  matchedLoss: number;
 } {
   let matchedCount = 0;
   let matchedTotal = 0;
@@ -360,10 +353,143 @@ function evaluateObjective(
     return { ...match, cost };
   });
 
+  return {
+    resolvedMatches,
+    matchedLoss: matchedTotal / Math.max(matchedCount, 1),
+  };
+}
+
+function evaluateMatchObjective(
+  peaks: SpectralPeak[],
+  targets: MatchTarget[],
+  matches: PeakMatch[],
+): {
+  peaks: SpectralPeak[];
+  matches: PeakMatch[];
+  match: number;
+  loss: number;
+} {
+  const { resolvedMatches, matchedLoss } = resolveMatches(peaks, targets, matches);
+  const match = matchedLoss + unmatchedLoss(peaks, resolvedMatches);
+
+  return {
+    peaks,
+    matches: resolvedMatches,
+    match,
+    loss: matchWeight() * match,
+  };
+}
+
+function matchObjective(targets: MatchTarget[]) {
+  const peaks = peaksFromState();
+  const matches = solveMatching(peaks, targets);
+  return evaluateMatchObjective(peaks, targets, matches);
+}
+
+function matchGradients(targets: MatchTarget[]) {
+  const base = matchObjective(targets);
+  const baseMatches = base.matches;
+  const freqGrad = new Float64Array(logFreqs.length);
+  const energyGrad = new Float64Array(energies.length);
+
+  for (let i = 0; i < logFreqs.length; i++) {
+    if (isMatched(baseMatches[i])) {
+      const savedFreq = logFreqs[i]!;
+      logFreqs[i] = savedFreq + LOG_FREQ_DELTA;
+      freqGrad[i] = (
+        evaluateMatchObjective(peaksFromState(), targets, baseMatches).loss - base.loss
+      ) / LOG_FREQ_DELTA;
+      logFreqs[i] = savedFreq;
+    } else {
+      freqGrad[i] = 0;
+    }
+
+    const savedEnergy = energies[i]!;
+    energies[i] = savedEnergy + ENERGY_DELTA;
+    energyGrad[i] = (
+      evaluateMatchObjective(peaksFromState(), targets, baseMatches).loss - base.loss
+    ) / ENERGY_DELTA;
+    energies[i] = savedEnergy;
+  }
+
+  return { baseMatches, freqGrad, energyGrad };
+}
+
+function evaluateDissObjective(
+  peaks: SpectralPeak[],
+  targets: MatchTarget[],
+  matches: PeakMatch[],
+  targetDiss: number,
+): {
+  peaks: SpectralPeak[];
+  matches: PeakMatch[];
+  diss: number;
+  loss: number;
+} {
+  const { resolvedMatches } = resolveMatches(peaks, targets, matches);
   const currentDiss = peakDissonance(matchedPeaks(peaks, resolvedMatches));
   const dissGap = currentDiss - targetDiss;
   const diss = dissGap * dissGap;
-  const matchedLoss = matchedTotal / Math.max(matchedCount, 1);
+
+  return {
+    peaks,
+    matches: resolvedMatches,
+    diss,
+    loss: dissWeight() * diss,
+  };
+}
+
+function dissObjective(targets: MatchTarget[], targetDiss: number) {
+  const peaks = peaksFromState();
+  const matches = solveMatching(peaks, targets);
+  return evaluateDissObjective(peaks, targets, matches, targetDiss);
+}
+
+function dissGradients(targets: MatchTarget[], targetDiss: number) {
+  const base = dissObjective(targets, targetDiss);
+  const baseMatches = base.matches;
+  const freqGrad = new Float64Array(logFreqs.length);
+  const energyGrad = new Float64Array(energies.length);
+
+  for (let i = 0; i < logFreqs.length; i++) {
+    if (isMatched(baseMatches[i])) {
+      const savedFreq = logFreqs[i]!;
+      logFreqs[i] = savedFreq + LOG_FREQ_DELTA;
+      freqGrad[i] = (
+        evaluateDissObjective(peaksFromState(), targets, baseMatches, targetDiss).loss - base.loss
+      ) / LOG_FREQ_DELTA;
+      logFreqs[i] = savedFreq;
+    } else {
+      freqGrad[i] = 0;
+    }
+
+    const savedEnergy = energies[i]!;
+    energies[i] = savedEnergy + ENERGY_DELTA;
+    energyGrad[i] = (
+      evaluateDissObjective(peaksFromState(), targets, baseMatches, targetDiss).loss - base.loss
+    ) / ENERGY_DELTA;
+    energies[i] = savedEnergy;
+  }
+
+  return { baseMatches, freqGrad, energyGrad };
+}
+
+function evaluateObjective(
+  peaks: SpectralPeak[],
+  targets: MatchTarget[],
+  matches: PeakMatch[],
+  targetDiss: number,
+): {
+  peaks: SpectralPeak[];
+  matches: PeakMatch[];
+  diss: number;
+  match: number;
+  loss: number;
+} {
+  const { resolvedMatches, matchedLoss } = resolveMatches(peaks, targets, matches);
+  const currentDiss = peakDissonance(matchedPeaks(peaks, resolvedMatches));
+  const dissGap = currentDiss - targetDiss;
+  const diss = dissGap * dissGap;
   const match = matchedLoss + unmatchedLoss(peaks, resolvedMatches);
 
   return {
@@ -385,68 +511,58 @@ function isMatched(match: PeakMatch | undefined): boolean {
   return !!match && match.targetIndex !== null;
 }
 
-function gradients(targets: MatchTarget[], targetDiss: number) {
-  const base = objective(targets, targetDiss);
-  const baseMatches = base.matches;
-  const freqGrad = new Float64Array(logFreqs.length);
-  const energyGrad = new Float64Array(energies.length);
-
-  for (let i = 0; i < logFreqs.length; i++) {
-    if (isMatched(baseMatches[i])) {
-      const savedFreq = logFreqs[i]!;
-      logFreqs[i] = savedFreq + LOG_FREQ_DELTA;
-      freqGrad[i] = (
-        evaluateObjective(peaksFromState(), targets, baseMatches, targetDiss).loss - base.loss
-      ) / LOG_FREQ_DELTA;
-      logFreqs[i] = savedFreq;
-    } else {
-      freqGrad[i] = 0;
-    }
-
-    const savedEnergy = energies[i]!;
-    energies[i] = savedEnergy + ENERGY_DELTA;
-    energyGrad[i] = (
-      evaluateObjective(peaksFromState(), targets, baseMatches, targetDiss).loss - base.loss
-    ) / ENERGY_DELTA;
-    energies[i] = savedEnergy;
-  }
-
-  return { base, baseMatches, freqGrad, energyGrad };
-}
-
-// ---------------------------------------------------------------------------
-// Adam
-// ---------------------------------------------------------------------------
-
 const ADAM_BETA1 = 0.0;
 const ADAM_BETA2 = 0.99;
 const ADAM_EPS = 1e-8;
 
-let freqM = new Float64Array(0);
-let freqV = new Float64Array(0);
-let energyM = new Float64Array(0);
-let energyV = new Float64Array(0);
-let adamT = 0;
+type AdamState = {
+  freqM: Float64Array;
+  freqV: Float64Array;
+  energyM: Float64Array;
+  energyV: Float64Array;
+  t: number;
+};
 
-function resetAdam() {
-  freqM = new Float64Array(logFreqs.length);
-  freqV = new Float64Array(logFreqs.length);
-  energyM = new Float64Array(energies.length);
-  energyV = new Float64Array(energies.length);
-  adamT = 0;
+function createAdamState(): AdamState {
+  return {
+    freqM: new Float64Array(0),
+    freqV: new Float64Array(0),
+    energyM: new Float64Array(0),
+    energyV: new Float64Array(0),
+    t: 0,
+  };
 }
 
-function adamStep(targets: MatchTarget[], targetDiss: number) {
-  const { baseMatches, freqGrad, energyGrad } = gradients(targets, targetDiss);
-  adamT++;
+let matchAdam = createAdamState();
+let dissAdam = createAdamState();
 
+function resetAdamState(state: AdamState) {
+  state.freqM = new Float64Array(logFreqs.length);
+  state.freqV = new Float64Array(logFreqs.length);
+  state.energyM = new Float64Array(energies.length);
+  state.energyV = new Float64Array(energies.length);
+  state.t = 0;
+}
+
+function resetAdam() {
+  resetAdamState(matchAdam);
+  resetAdamState(dissAdam);
+}
+
+function applyAdamStep(
+  state: AdamState,
+  baseMatches: PeakMatch[],
+  freqGrad: Float64Array,
+  energyGrad: Float64Array,
+) {
+  state.t++;
   for (let i = 0; i < logFreqs.length; i++) {
     if (isMatched(baseMatches[i])) {
-      freqM[i] = ADAM_BETA1 * freqM[i]! + (1 - ADAM_BETA1) * freqGrad[i]!;
-      freqV[i] = ADAM_BETA2 * freqV[i]! + (1 - ADAM_BETA2) * freqGrad[i]! * freqGrad[i]!;
+      state.freqM[i] = ADAM_BETA1 * state.freqM[i]! + (1 - ADAM_BETA1) * freqGrad[i]!;
+      state.freqV[i] = ADAM_BETA2 * state.freqV[i]! + (1 - ADAM_BETA2) * freqGrad[i]! * freqGrad[i]!;
 
-      const freqMHat = freqM[i]! / (1 - Math.pow(ADAM_BETA1, adamT));
-      const freqVHat = freqV[i]! / (1 - Math.pow(ADAM_BETA2, adamT));
+      const freqMHat = state.freqM[i]! / (1 - Math.pow(ADAM_BETA1, state.t));
+      const freqVHat = state.freqV[i]! / (1 - Math.pow(ADAM_BETA2, state.t));
       logFreqs[i] = Math.max(
         minLogFreq,
         Math.min(
@@ -455,15 +571,15 @@ function adamStep(targets: MatchTarget[], targetDiss: number) {
         ),
       );
     } else {
-      freqM[i] = 0;
-      freqV[i] = 0;
+      state.freqM[i] = 0;
+      state.freqV[i] = 0;
     }
 
-    energyM[i] = ADAM_BETA1 * energyM[i]! + (1 - ADAM_BETA1) * energyGrad[i]!;
-    energyV[i] = ADAM_BETA2 * energyV[i]! + (1 - ADAM_BETA2) * energyGrad[i]! * energyGrad[i]!;
+    state.energyM[i] = ADAM_BETA1 * state.energyM[i]! + (1 - ADAM_BETA1) * energyGrad[i]!;
+    state.energyV[i] = ADAM_BETA2 * state.energyV[i]! + (1 - ADAM_BETA2) * energyGrad[i]! * energyGrad[i]!;
 
-    const energyMHat = energyM[i]! / (1 - Math.pow(ADAM_BETA1, adamT));
-    const energyVHat = energyV[i]! / (1 - Math.pow(ADAM_BETA2, adamT));
+    const energyMHat = state.energyM[i]! / (1 - Math.pow(ADAM_BETA1, state.t));
+    const energyVHat = state.energyV[i]! / (1 - Math.pow(ADAM_BETA2, state.t));
     energies[i] = Math.max(
       STATE_ENERGY_MIN,
       Math.min(
@@ -472,6 +588,16 @@ function adamStep(targets: MatchTarget[], targetDiss: number) {
       ),
     );
   }
+}
+
+function matchAdamStep(targets: MatchTarget[]) {
+  const { baseMatches, freqGrad, energyGrad } = matchGradients(targets);
+  applyAdamStep(matchAdam, baseMatches, freqGrad, energyGrad);
+}
+
+function dissAdamStep(targets: MatchTarget[], targetDiss: number) {
+  const { baseMatches, freqGrad, energyGrad } = dissGradients(targets, targetDiss);
+  applyAdamStep(dissAdam, baseMatches, freqGrad, energyGrad);
 }
 
 // ---------------------------------------------------------------------------
@@ -494,16 +620,19 @@ function step() {
 
   const targetEnergies = spectrumToEnergies(reference);
   const targets = extractEnergeticTargets(targetEnergies);
-  const targetDiss = targetDissonance(targets);
+  const desiredDiss = targetDissonance();
 
   if (!initialized) {
     initFromTargets(targets);
   }
 
-  for (let i = 0; i < OPTIMIZER_STEPS_PER_TICK; i++) {
-    adamStep(targets, targetDiss);
+  for (let i = 0; i < MATCH_STEPS_PER_TICK; i++) {
+    matchAdamStep(targets);
   }
-  const result = objective(targets, targetDiss);
+  for (let i = 0; i < DISS_STEPS_PER_TICK; i++) {
+    dissAdamStep(targets, desiredDiss);
+  }
+  const result = objective(targets, desiredDiss);
   pushHistory(setDissHistory, result.diss);
   pushHistory(setMatchHistory, result.match);
   setOptimizedPeaks(result.peaks);

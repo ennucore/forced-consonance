@@ -1,5 +1,5 @@
 import { onCleanup, onMount } from "solid-js";
-import { dissDelta, getAnalyser, setDissDelta } from "../audio";
+import { getAnalyser } from "../audio";
 import {
   dissHistory,
   dissWeight,
@@ -12,8 +12,10 @@ import {
   setEnergyLr,
   setFreqLr,
   setMatchWeight,
+  setTargetDiss,
   startOptimizer,
   stopOptimizer,
+  targetDiss,
 } from "../optimizer";
 
 // ---------------------------------------------------------------------------
@@ -327,16 +329,16 @@ export default function DissonanceMeter() {
         </label>
 
         <label class="lr-control">
-          delta:
+          target:
           <input
             type="range"
-            min="-10"
+            min="0"
             max="10"
             step="0.1"
-            value={dissDelta()}
-            onInput={(e) => setDissDelta(parseFloat(e.currentTarget.value))}
+            value={targetDiss()}
+            onInput={(e) => setTargetDiss(parseFloat(e.currentTarget.value))}
           />
-          <span class="lr-value">{dissDelta().toFixed(1)}</span>
+          <span class="lr-value">{targetDiss().toFixed(1)}</span>
         </label>
       </div>
     </div>
