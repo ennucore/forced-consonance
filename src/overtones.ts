@@ -6,6 +6,18 @@ import { createSignal } from "solid-js";
 
 export const OVERTONE_COUNT = 16;
 
+// Harmonic multipliers: which frequency ratios the overtone bars represent.
+// Integer mode: [1, 2, 3, ..., 16]
+// Half-step mode: [1, 1.5, 2, 2.5, ..., 8.5]
+export const [halfSteps, setHalfSteps] = createSignal(false);
+
+export function getHarmonics(): number[] {
+  if (halfSteps()) {
+    return Array.from({ length: OVERTONE_COUNT }, (_, i) => 1 + i * 0.5);
+  }
+  return Array.from({ length: OVERTONE_COUNT }, (_, i) => i + 1);
+}
+
 // ---------------------------------------------------------------------------
 // Waveform presets
 // ---------------------------------------------------------------------------
@@ -109,14 +121,15 @@ export function computeChordDissonance(
     for (let b = a + 1; b < fundamentals.length; b++) {
       const ratio = fundamentals[b]! / fundamentals[a]!;
       // Sum pairwise partial roughness for this interval
+      const harmonics = getHarmonics();
       for (let i = 0; i < amps.length; i++) {
         const wi = amps[i]!;
         if (wi === 0) continue;
-        const fi = i + 1;
+        const fi = harmonics[i]!;
         for (let j = 0; j < amps.length; j++) {
           const wj = amps[j]!;
           if (wj === 0) continue;
-          const fj = (j + 1) * ratio;
+          const fj = harmonics[j]! * ratio;
           total += wi * wj * kernel(fj / fi - 1);
         }
       }
@@ -141,15 +154,16 @@ export function computeDissonanceCurve(
     const ratio = rMin + (p / (points - 1)) * (rMax - rMin);
     let dissonance = 0;
 
+    const harmonics = getHarmonics();
     for (let i = 0; i < amps.length; i++) {
       const wi = amps[i];
       if (wi === 0) continue;
-      const fi = i + 1;
+      const fi = harmonics[i]!;
 
       for (let j = 0; j < amps.length; j++) {
         const wj = amps[j];
         if (wj === 0) continue;
-        const fj = (j + 1) * ratio;
+        const fj = harmonics[j]! * ratio;
 
         const x = fj / fi - 1;
         dissonance += wi * wj * kernel(x);

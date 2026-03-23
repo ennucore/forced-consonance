@@ -5,6 +5,9 @@ import {
   overtoneAmps,
   setOvertoneAmps,
   applyPreset,
+  halfSteps,
+  setHalfSteps,
+  getHarmonics,
 } from "../overtones";
 
 const PRESETS: WaveformPreset[] = ["sine", "sawtooth", "square", "triangle", "string", "piano"];
@@ -64,6 +67,15 @@ export function OvertoneEditor() {
             </button>
           )}
         </For>
+        <button
+          class={`preset-btn ${halfSteps() ? "active" : ""}`}
+          onClick={() => {
+            setHalfSteps(!halfSteps());
+            applyPreset("sawtooth"); // reset amps when switching
+          }}
+        >
+          ½×
+        </button>
       </div>
 
       <div class="overtone-bars">
@@ -80,7 +92,7 @@ export function OvertoneEditor() {
                 class="bar-fill"
                 style={{ height: `${clamp(amp, 0, 1) * 100}%` }}
               />
-              <div class="bar-label">{i() + 1}×</div>
+              <div class="bar-label">{getHarmonics()[i()]!}×</div>
             </div>
           )}
         </For>

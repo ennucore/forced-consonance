@@ -166,6 +166,12 @@ h1 {
   border-color: var(--yellow);
 }
 
+.preset-btn.active {
+  background: var(--yellow);
+  color: var(--bg);
+  border-color: var(--yellow);
+}
+
 .overtone-bars {
   display: flex;
   gap: 3px;

@@ -160,8 +160,17 @@ export default function DissonanceVolume() {
     <div class="dissonance-heatmap">
       <div class="dissonance-header">
         <span class="panel-label">4-note dissonance (r1 × r2, slice at r3)</span>
-        <label class="base-freq-control">
+        <span class="base-freq-control">
           r3:
+          {INTERVALS.map(([ratio, label]) => (
+            <button
+              class={`preset-btn ${Math.abs(r3() - ratio) < 0.01 ? "active" : ""}`}
+              onClick={() => setR3(ratio)}
+              style={{ padding: "2px 5px", "font-size": "0.6rem" }}
+            >
+              {label}
+            </button>
+          ))}
           <input
             type="range"
             min={R_MIN}
@@ -171,7 +180,7 @@ export default function DissonanceVolume() {
             onInput={(e) => setR3(parseFloat(e.currentTarget.value))}
           />
           {r3().toFixed(2)}
-        </label>
+        </span>
       </div>
       <canvas
         ref={canvas}

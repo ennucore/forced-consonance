@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { overtoneAmps } from "./overtones";
+import { overtoneAmps, getHarmonics } from "./overtones";
 
 let ctx: AudioContext | null = null;
 
@@ -93,11 +93,12 @@ export function scaleNoteAmp(note: string, amp: number) {
   if (prevAmp > 1e-10) {
     const ratio = amp / prevAmp;
     const amps = overtoneAmps();
+    const harmonics = getHarmonics();
     const current = spectrum();
     const updated = new Float64Array(current);
     for (let i = 0; i < amps.length; i++) {
       if (amps[i]! === 0) continue;
-      const freq = entry.freq * (i + 1);
+      const freq = entry.freq * harmonics[i]!;
       if (freq > 20000) continue;
       const idx = nearestPoolIndex(freq);
       updated[idx] *= ratio;
@@ -117,11 +118,12 @@ function buildReference(): Float64Array {
   if (entries.length === 0) return ref;
 
   const amps = overtoneAmps();
+  const harmonics = getHarmonics();
   for (const { freq: f0, amp: noteAmp } of entries) {
     for (let i = 0; i < amps.length; i++) {
       const a = amps[i]! * noteAmp;
       if (a === 0) continue;
-      const freq = f0 * (i + 1);
+      const freq = f0 * harmonics[i]!;
       if (freq > 20000) continue;
       const idx = nearestPoolIndex(freq);
       ref[idx] = Math.max(ref[idx]!, a);
@@ -264,10 +266,11 @@ function startVoice(freq: number, amps: number[]): Voice {
 
   const oscillators: OscillatorNode[] = [];
 
+  const harmonics = getHarmonics();
   for (let i = 0; i < amps.length; i++) {
     const amp = amps[i]!;
     if (amp === 0) continue;
-    const freq_ = freq * (i + 1);
+    const freq_ = freq * harmonics[i]!;
     if (freq_ > 20000) continue;
 
     const osc = audio.createOscillator();
