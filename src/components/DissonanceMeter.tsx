@@ -1,34 +1,31 @@
-import { createSignal, onMount, onCleanup } from "solid-js";
+import { onCleanup, onMount } from "solid-js";
+import { dissDelta, getAnalyser, setDissDelta } from "../audio";
 import {
-  getAnalyser,
-  spectrum,
-  referenceSpectrum,
-  updateSpectrum,
-  setOptimizerActive,
-  getPoolFreqs,
-  SPECTRUM_SIZE,
-  dissDelta,
-  setDissDelta,
-} from "../audio";
-
-const HISTORY_LEN = 200;
-const WIDTH = 200;
-const HEIGHT = 48;
-const SAMPLE_INTERVAL = 50; // ms
+  dissHistory,
+  dissWeight,
+  energyLr,
+  freqLr,
+  matchHistory,
+  matchWeight,
+  running,
+  setDissWeight,
+  setEnergyLr,
+  setFreqLr,
+  setMatchWeight,
+  startOptimizer,
+  stopOptimizer,
+} from "../optimizer";
 
 // ---------------------------------------------------------------------------
-// Sethares roughness kernel
+// FFT dissonance display (from analyser node)
 // ---------------------------------------------------------------------------
 
 const KERNEL_A = 0.0023;
+
 function kernel(x: number): number {
   const absx = Math.abs(x);
   return 50 * absx * Math.exp(-(x * x) / KERNEL_A);
 }
-
-// ---------------------------------------------------------------------------
-// FFT peak extraction + spectral dissonance (for display)
-// ---------------------------------------------------------------------------
 
 const AMP_THRESHOLD = 8;
 const MAX_FREQ = 8000;
@@ -37,395 +34,102 @@ const PEAK_RADIUS = 3;
 function extractPeaks(
   data: Uint8Array,
   sampleRate: number,
-  fftSize: number
+  fftSize: number,
 ): { freq: number; amp: number }[] {
   const binHz = sampleRate / fftSize;
   const maxBin = Math.min(data.length, Math.floor(MAX_FREQ / binHz));
   const peaks: { freq: number; amp: number }[] = [];
 
   for (let i = PEAK_RADIUS; i < maxBin - PEAK_RADIUS; i++) {
-    const val = data[i]!;
-    if (val < AMP_THRESHOLD) continue;
+    const value = data[i]!;
+    if (value < AMP_THRESHOLD) continue;
 
     let isMax = true;
     for (let j = 1; j <= PEAK_RADIUS; j++) {
-      if (data[i - j]! >= val || data[i + j]! >= val) {
+      if (data[i - j]! >= value || data[i + j]! >= value) {
         isMax = false;
         break;
       }
     }
-    if (!isMax) continue;
 
-    peaks.push({ freq: i * binHz, amp: val / 255 });
+    if (isMax) {
+      peaks.push({ freq: i * binHz, amp: value / 255 });
+    }
   }
+
   return peaks;
 }
 
 function fftDissonance(peaks: { freq: number; amp: number }[]): number {
   if (peaks.length < 2) return 0;
+
   let total = 0;
   for (let i = 0; i < peaks.length; i++) {
-    const pi = peaks[i]!;
+    const a = peaks[i]!;
     for (let j = i + 1; j < peaks.length; j++) {
-      const pj = peaks[j]!;
-      total += pi.amp * pj.amp * kernel(pj.freq / pi.freq - 1);
+      const b = peaks[j]!;
+      total += a.amp * b.amp * kernel(b.freq / a.freq - 1);
     }
   }
+
   return total;
-}
-
-// ---------------------------------------------------------------------------
-// Dissonance on the pool spectrum
-// ---------------------------------------------------------------------------
-
-function poolDissonance(amps: Float64Array): number {
-  const freqs = getPoolFreqs();
-  // Collect active bins
-  const active: { freq: number; amp: number }[] = [];
-  for (let i = 0; i < amps.length; i++) {
-    if (amps[i]! > 1e-6) active.push({ freq: freqs[i]!, amp: amps[i]! });
-  }
-  if (active.length < 2) return 0;
-
-  let total = 0;
-  for (let i = 0; i < active.length; i++) {
-    const ai = active[i]!;
-    for (let j = i + 1; j < active.length; j++) {
-      const aj = active[j]!;
-      total += ai.amp * aj.amp * kernel(aj.freq / ai.freq - 1);
-    }
-  }
-  return total;
-}
-
-// ---------------------------------------------------------------------------
-// 1D Optimal Transport: displacement interpolation
-// ---------------------------------------------------------------------------
-//
-// Instead of using a loss function for closeness, directly compute the
-// optimal transport map between current and reference, then move each
-// mass particle a fraction of the way toward its destination.
-// This physically slides peaks along the frequency axis.
-
-function transportStep(
-  current: Float64Array,
-  ref: Float64Array,
-  alpha: number // fraction to move toward reference (0 = stay, 1 = snap)
-): Float64Array {
-  const n = current.length;
-
-  let totalCur = 0, totalRef = 0;
-  for (let i = 0; i < n; i++) {
-    totalCur += current[i]!;
-    totalRef += ref[i]!;
-  }
-
-  // Edge cases: one or both empty
-  if (totalCur < 1e-10 && totalRef < 1e-10) return new Float64Array(n);
-  if (totalCur < 1e-10) {
-    // No current mass — fade in reference
-    const result = new Float64Array(n);
-    for (let i = 0; i < n; i++) result[i] = ref[i]! * alpha;
-    return result;
-  }
-  if (totalRef < 1e-10) {
-    // No reference — fade out current
-    const result = new Float64Array(n);
-    for (let i = 0; i < n; i++) result[i] = current[i]! * (1 - alpha);
-    return result;
-  }
-
-  // Normalize to equal mass for quantile matching
-  const curNorm = new Float64Array(n);
-  const refNorm = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    curNorm[i] = current[i]! / totalCur;
-    refNorm[i] = ref[i]! / totalRef;
-  }
-
-  // Build CDFs
-  const cdfCur = new Float64Array(n);
-  const cdfRef = new Float64Array(n);
-  cdfCur[0] = curNorm[0]!;
-  cdfRef[0] = refNorm[0]!;
-  for (let i = 1; i < n; i++) {
-    cdfCur[i] = cdfCur[i - 1]! + curNorm[i]!;
-    cdfRef[i] = cdfRef[i - 1]! + refNorm[i]!;
-  }
-
-  // For each bin with mass in current, find its transport destination
-  // via quantile matching, then interpolate position
-  const result = new Float64Array(n);
-
-  for (let i = 0; i < n; i++) {
-    if (curNorm[i]! < 1e-12) continue;
-
-    // Quantile midpoint of this bin's mass
-    const qMid = (i > 0 ? cdfCur[i - 1]! : 0) + curNorm[i]! / 2;
-
-    // Find target: inverse CDF of reference at this quantile
-    let target = 0;
-    for (let j = 0; j < n; j++) {
-      if (cdfRef[j]! >= qMid) { target = j; break; }
-      target = j;
-    }
-
-    // Interpolate position between current and target
-    const newPos = (1 - alpha) * i + alpha * target;
-
-    // Distribute mass to nearest bins (linear interpolation on grid)
-    const lo = Math.floor(newPos);
-    const hi = lo + 1;
-    const frac = newPos - lo;
-    const mass = curNorm[i]!;
-
-    if (lo >= 0 && lo < n) result[lo] += mass * (1 - frac);
-    if (hi >= 0 && hi < n) result[hi] += mass * frac;
-  }
-
-  // Scale to interpolated total mass
-  const targetTotal = (1 - alpha) * totalCur + alpha * totalRef;
-  for (let i = 0; i < n; i++) result[i] *= targetTotal;
-
-  return result;
-}
-
-// KL divergence between energy spectra: KL(P || Q) where P=current, Q=ref
-// Energy = amplitude^2. Both are normalized to distributions with smoothing.
-const KL_EPS = 1e-10;
-
-function energyKL(a: Float64Array, b: Float64Array): number {
-  // Convert to energy (amplitude^2)
-  let sumA = 0, sumB = 0;
-  for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    sumA += a[i]! * a[i]!;
-    sumB += b[i]! * b[i]!;
-  }
-  if (sumA < KL_EPS || sumB < KL_EPS) return 0;
-
-  let kl = 0;
-  for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    const p = (a[i]! * a[i]!) / sumA + KL_EPS;
-    const q = (b[i]! * b[i]!) / sumB + KL_EPS;
-    kl += p * Math.log(p / q);
-  }
-  return kl;
-}
-
-// ---------------------------------------------------------------------------
-// Adam optimizer — dissonance reduction only
-// ---------------------------------------------------------------------------
-//
-// Closeness is handled by the transport step (no gradient needed).
-// Adam only optimizes the dissonance term, so there are no competing
-// objectives and no oscillation.
-
-const GRAD_DELTA = 1e-4;
-const ADAM_BETA1 = 0.9;
-const ADAM_BETA2 = 0.999;
-const ADAM_EPS = 1e-8;
-
-let adamM: Float64Array | null = null;
-let adamV: Float64Array | null = null;
-let adamT = 0;
-
-function resetAdam() {
-  adamM = new Float64Array(SPECTRUM_SIZE);
-  adamV = new Float64Array(SPECTRUM_SIZE);
-  adamT = 0;
-}
-
-// ---------------------------------------------------------------------------
-// Mode A: Transport + dissonance-only Adam (no competing objectives)
-// ---------------------------------------------------------------------------
-
-function dissLoss(amps: Float64Array, targetDiss: number): number {
-  const d = poolDissonance(amps);
-  const diff = d - targetDiss;
-  return diff * diff;
-}
-
-function optimizeStepTransport(
-  current: Float64Array,
-  ref: Float64Array,
-  lr: number,
-  transportAlpha: number,
-  dissWeight: number,
-  targetDiss: number
-): Float64Array {
-  const n = current.length;
-
-  // Step 1: Transport — slide spectrum toward reference
-  const transported = transportStep(current, ref, transportAlpha);
-
-  // Step 2: Dissonance gradient (Adam) on the transported result
-  if (dissWeight <= 0) return transported;
-
-  if (!adamM || adamM.length !== n) resetAdam();
-  adamT++;
-
-  const baseLoss = dissLoss(transported, targetDiss);
-  const grad = new Float64Array(n);
-
-  for (let i = 0; i < n; i++) {
-    if (transported[i]! < 1e-6) continue;
-
-    const perturbed = new Float64Array(transported);
-    perturbed[i] += GRAD_DELTA;
-    grad[i] = (dissLoss(perturbed, targetDiss) - baseLoss) / GRAD_DELTA;
-  }
-
-  const result = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    adamM![i] = ADAM_BETA1 * adamM![i]! + (1 - ADAM_BETA1) * grad[i]!;
-    adamV![i] = ADAM_BETA2 * adamV![i]! + (1 - ADAM_BETA2) * grad[i]! * grad[i]!;
-
-    const mHat = adamM![i]! / (1 - Math.pow(ADAM_BETA1, adamT));
-    const vHat = adamV![i]! / (1 - Math.pow(ADAM_BETA2, adamT));
-
-    result[i] = Math.max(0, transported[i]! - lr * mHat / (Math.sqrt(vHat) + ADAM_EPS));
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Mode B: Joint loss (dissonance + MSE closeness) with Adam
-// ---------------------------------------------------------------------------
-
-function jointLoss(
-  amps: Float64Array,
-  ref: Float64Array,
-  closenessWeight: number,
-  dissWeight: number,
-  targetDiss: number
-): number {
-  return dissWeight * dissLoss(amps, targetDiss) + closenessWeight * energyKL(amps, ref);
-}
-
-function optimizeStepJoint(
-  current: Float64Array,
-  ref: Float64Array,
-  lr: number,
-  closenessWeight: number,
-  dissWeight: number,
-  targetDiss: number
-): Float64Array {
-  const n = current.length;
-
-  if (!adamM || adamM.length !== n) resetAdam();
-  adamT++;
-
-  const loss = jointLoss(current, ref, closenessWeight, dissWeight, targetDiss);
-  const grad = new Float64Array(n);
-
-  for (let i = 0; i < n; i++) {
-    if (current[i]! < 1e-6 && ref[i]! < 1e-6) continue;
-
-    const perturbed = new Float64Array(current);
-    perturbed[i] += GRAD_DELTA;
-    grad[i] = (jointLoss(perturbed, ref, closenessWeight, dissWeight, targetDiss) - loss) / GRAD_DELTA;
-  }
-
-  const result = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    adamM![i] = ADAM_BETA1 * adamM![i]! + (1 - ADAM_BETA1) * grad[i]!;
-    adamV![i] = ADAM_BETA2 * adamV![i]! + (1 - ADAM_BETA2) * grad[i]! * grad[i]!;
-
-    const mHat = adamM![i]! / (1 - Math.pow(ADAM_BETA1, adamT));
-    const vHat = adamV![i]! / (1 - Math.pow(ADAM_BETA2, adamT));
-
-    result[i] = Math.max(0, current[i]! - lr * mHat / (Math.sqrt(vHat) + ADAM_EPS));
-  }
-
-  return result;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
+const SAMPLE_INTERVAL = 50;
+const SPARKLINE_W = 200;
+const SPARKLINE_H = 48;
+const HISTORY_LEN = 200;
+
 export default function DissonanceMeter() {
   let dissCanvas!: HTMLCanvasElement;
-  let closeCanvas!: HTMLCanvasElement;
+  let matchCanvas!: HTMLCanvasElement;
+  let lossCanvas!: HTMLCanvasElement;
   let dissValueEl!: HTMLSpanElement;
-  let closeValueEl!: HTMLSpanElement;
+  let matchValueEl!: HTMLSpanElement;
 
-  const [optimizing, setOptimizing] = createSignal(false);
-  const [lr, setLr] = createSignal(0.3162);
-  const [closeness, setCloseness] = createSignal(15);
-  const [dissOn, setDissOn] = createSignal(true);
-  const [mode, setMode] = createSignal<"transport" | "joint">("joint");
-  const [stepsPerSec, setStepsPerSec] = createSignal(30);
-
-  let optimizeIntervalId = 0;
-
-  const dissHistory: number[] = [];
-  const closeHistory: number[] = [];
+  const dissHist: number[] = [];
+  const matchHistLocal: number[] = [];
   let dissMax = 0.001;
-  let closeMax = 0.001;
+  let matchMax = 0.001;
   let intervalId: number;
 
-  function runStep() {
-    const current = spectrum();
-    const ref = referenceSpectrum();
-    const dw = dissOn() ? 1 : 0;
-    // Target dissonance = max(0, dissonance(reference) - delta)
-    const refDiss = poolDissonance(ref);
-    const targetDiss = Math.max(0, refDiss - dissDelta());
-    const updated = mode() === "transport"
-      ? optimizeStepTransport(current, ref, lr(), closeness(), dw, targetDiss)
-      : optimizeStepJoint(current, ref, lr(), closeness(), dw, targetDiss);
-    updateSpectrum(updated);
-  }
-
-  function restartInterval() {
-    clearInterval(optimizeIntervalId);
-    optimizeIntervalId = window.setInterval(runStep, Math.round(1000 / stepsPerSec()));
-  }
-
-  function startOptimize() {
-    setOptimizing(true);
-    setOptimizerActive(true);
-    resetAdam();
-    restartInterval();
-  }
-
-  function stopOptimize() {
-    setOptimizing(false);
-    setOptimizerActive(false);
-    clearInterval(optimizeIntervalId);
-  }
-
   function drawSparkline(
-    cvs: HTMLCanvasElement,
-    hist: number[],
-    maxVal: number,
+    canvas: HTMLCanvasElement,
+    history: number[],
+    maxValue: number,
     fillColor: string,
-    strokeColor: string
+    strokeColor: string,
   ) {
-    const ctx = cvs.getContext("2d")!;
-    const w = cvs.width;
-    const h = cvs.height;
-    ctx.clearRect(0, 0, w, h);
-    if (hist.length < 2) return;
+    const ctx = canvas.getContext("2d")!;
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
+    if (history.length < 2) return;
 
     ctx.beginPath();
-    for (let i = 0; i < hist.length; i++) {
-      const x = w - (hist.length - 1 - i) * (w / (HISTORY_LEN - 1));
-      const y = h - (hist[i]! / maxVal) * (h - 4);
-      if (i === 0) { ctx.moveTo(x, h); ctx.lineTo(x, y); }
-      else ctx.lineTo(x, y);
+    for (let i = 0; i < history.length; i++) {
+      const x = width - (history.length - 1 - i) * (width / (HISTORY_LEN - 1));
+      const y = height - (history[i]! / maxValue) * (height - 4);
+      if (i === 0) {
+        ctx.moveTo(x, height);
+        ctx.lineTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
     }
-    ctx.lineTo(w, h);
+    ctx.lineTo(width, height);
     ctx.closePath();
     ctx.fillStyle = fillColor;
     ctx.fill();
 
     ctx.beginPath();
-    for (let i = 0; i < hist.length; i++) {
-      const x = w - (hist.length - 1 - i) * (w / (HISTORY_LEN - 1));
-      const y = h - (hist[i]! / maxVal) * (h - 4);
+    for (let i = 0; i < history.length; i++) {
+      const x = width - (history.length - 1 - i) * (width / (HISTORY_LEN - 1));
+      const y = height - (history[i]! / maxValue) * (height - 4);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -434,47 +138,106 @@ export default function DissonanceMeter() {
     ctx.stroke();
   }
 
-  onMount(() => {
-    // Start optimizer by default
-    startOptimize();
+  function drawLossCurves(canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext("2d")!;
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
 
+    const diss = dissHistory();
+    const match = matchHistory();
+    if (diss.length < 2 && match.length < 2) return;
+
+    let dissMaxLocal = 0.001;
+    let matchMaxLocal = 0.001;
+    for (const value of diss) if (value > dissMaxLocal) dissMaxLocal = value;
+    for (const value of match) if (value > matchMaxLocal) matchMaxLocal = value;
+
+    if (match.length >= 2) {
+      ctx.beginPath();
+      for (let i = 0; i < match.length; i++) {
+        const x = (i / (match.length - 1)) * width;
+        const y = height - (match[i]! / matchMaxLocal) * (height - 4);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = "#a9dc76";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    if (diss.length >= 2) {
+      ctx.beginPath();
+      for (let i = 0; i < diss.length; i++) {
+        const x = (i / (diss.length - 1)) * width;
+        const y = height - (diss[i]! / dissMaxLocal) * (height - 4);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = "#ff6188";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    ctx.font = "9px monospace";
+    ctx.fillStyle = "#ff6188";
+    ctx.fillText("diss", 4, 12);
+    ctx.fillStyle = "#a9dc76";
+    ctx.fillText("match", 4, 24);
+  }
+
+  onMount(() => {
     const analyserNode = getAnalyser();
     const data = new Uint8Array(analyserNode.frequencyBinCount);
+
+    startOptimizer();
 
     intervalId = window.setInterval(() => {
       analyserNode.getByteFrequencyData(data);
 
-      // Dissonance from FFT
-      const peaks = extractPeaks(data, analyserNode.context.sampleRate, analyserNode.fftSize);
-      const d = fftDissonance(peaks);
-      dissHistory.push(d);
-      if (dissHistory.length > HISTORY_LEN) dissHistory.shift();
-      if (d > dissMax) dissMax = d;
-      else dissMax = dissMax * 0.999 + d * 0.001;
+      const peaks = extractPeaks(
+        data,
+        analyserNode.context.sampleRate,
+        analyserNode.fftSize,
+      );
+
+      const currentDiss = fftDissonance(peaks);
+      dissHist.push(currentDiss);
+      if (dissHist.length > HISTORY_LEN) dissHist.shift();
+      if (currentDiss > dissMax) dissMax = currentDiss;
+      else dissMax = dissMax * 0.999 + currentDiss * 0.001;
       dissMax = Math.max(dissMax, 0.001);
-      dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
+      dissValueEl.textContent = currentDiss > 0.01 ? currentDiss.toFixed(2) : "—";
 
-      // Closeness (Wasserstein)
-      const w = energyKL(spectrum(), referenceSpectrum());
-      closeHistory.push(w);
-      if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
-      if (w > closeMax) closeMax = w;
-      else closeMax = closeMax * 0.999 + w * 0.001;
-      closeMax = Math.max(closeMax, 0.001);
-      closeValueEl.textContent = w > 0.0001 ? w.toFixed(4) : "—";
+      const currentMatch = matchHistory().at(-1) ?? 0;
+      matchHistLocal.push(currentMatch);
+      if (matchHistLocal.length > HISTORY_LEN) matchHistLocal.shift();
+      if (currentMatch > matchMax) matchMax = currentMatch;
+      else matchMax = matchMax * 0.999 + currentMatch * 0.001;
+      matchMax = Math.max(matchMax, 0.001);
+      matchValueEl.textContent = currentMatch > 0.0001 ? currentMatch.toFixed(4) : "—";
 
-      // Draw both sparklines
-      drawSparkline(dissCanvas, dissHistory, dissMax,
-        "rgba(255, 97, 136, 0.15)", "#ff6188");
-      drawSparkline(closeCanvas, closeHistory, closeMax,
-        "rgba(169, 220, 118, 0.15)", "#a9dc76");
+      drawSparkline(
+        dissCanvas,
+        dissHist,
+        dissMax,
+        "rgba(255, 97, 136, 0.15)",
+        "#ff6188",
+      );
+      drawSparkline(
+        matchCanvas,
+        matchHistLocal,
+        matchMax,
+        "rgba(169, 220, 118, 0.15)",
+        "#a9dc76",
+      );
+      drawLossCurves(lossCanvas);
     }, SAMPLE_INTERVAL);
   });
 
   onCleanup(() => {
     clearInterval(intervalId);
-    clearInterval(optimizeIntervalId);
-    setOptimizerActive(false);
+    stopOptimizer();
   });
 
   return (
@@ -485,78 +248,86 @@ export default function DissonanceMeter() {
             <span class="panel-label">dissonance</span>
             <span class="meter-value" ref={dissValueEl}>—</span>
           </div>
-          <canvas ref={dissCanvas} width={WIDTH} height={HEIGHT} />
+          <canvas ref={dissCanvas} width={SPARKLINE_W} height={SPARKLINE_H} />
         </div>
         <div class="meter-chart">
           <div class="meter-header">
-            <span class="panel-label">KL divergence</span>
-            <span class="meter-value closeness-value" ref={closeValueEl}>—</span>
+            <span class="panel-label">match</span>
+            <span class="meter-value closeness-value" ref={matchValueEl}>—</span>
           </div>
-          <canvas ref={closeCanvas} width={WIDTH} height={HEIGHT} />
+          <canvas ref={matchCanvas} width={SPARKLINE_W} height={SPARKLINE_H} />
         </div>
       </div>
+
+      <div class="loss-plot">
+        <span class="panel-label">optimizer losses</span>
+        <canvas ref={lossCanvas} width={416} height={80} />
+      </div>
+
       <div class="optimize-controls">
         <button
-          class={`optimize-btn ${optimizing() ? "active" : ""}`}
-          onClick={() => (optimizing() ? stopOptimize() : startOptimize())}
+          class={`optimize-btn ${running() ? "active" : ""}`}
+          onClick={() => (running() ? stopOptimizer() : startOptimizer())}
         >
-          {optimizing() ? "stop" : "optimize"}
+          {running() ? "stop" : "optimize"}
         </button>
-        <button
-          class={`optimize-btn ${dissOn() ? "active" : ""}`}
-          onClick={() => setDissOn(!dissOn())}
-        >
-          diss
-        </button>
-        <button
-          class="optimize-btn"
-          onClick={() => { setMode(mode() === "transport" ? "joint" : "transport"); resetAdam(); }}
-        >
-          {mode() === "transport" ? "OT" : "KL"}
-        </button>
+
         <label class="lr-control">
-          lr:
+          energy lr:
           <input
             type="range"
             min="-4"
             max="0"
             step="0.1"
-            value={Math.log10(lr())}
-            onInput={(e) => setLr(Math.pow(10, parseFloat(e.currentTarget.value)))}
+            value={Math.log10(energyLr())}
+            onInput={(e) => setEnergyLr(Math.pow(10, parseFloat(e.currentTarget.value)))}
           />
-          <span class="lr-value">{lr().toFixed(4)}</span>
+          <span class="lr-value">{energyLr().toFixed(4)}</span>
         </label>
+      </div>
+
+      <div class="optimize-controls">
         <label class="lr-control">
-          {mode() === "transport" ? "slide:" : "KL:"}
+          diss:
           <input
             type="range"
             min="0"
-            max={mode() === "transport" ? "1" : "200"}
-            step={mode() === "transport" ? "0.01" : "1"}
-            value={closeness()}
-            onInput={(e) => setCloseness(parseFloat(e.currentTarget.value))}
+            max="5"
+            step="0.1"
+            value={dissWeight()}
+            onInput={(e) => setDissWeight(parseFloat(e.currentTarget.value))}
           />
-          <span class="lr-value">
-            {mode() === "transport" ? closeness().toFixed(2) : closeness().toFixed(0)}
-          </span>
+          <span class="lr-value">{dissWeight().toFixed(1)}</span>
         </label>
+
         <label class="lr-control">
-          hz:
+          match:
           <input
             type="range"
-            min="1"
-            max="60"
-            step="1"
-            value={stepsPerSec()}
-            onInput={(e) => {
-              setStepsPerSec(parseInt(e.currentTarget.value));
-              if (optimizing()) restartInterval();
-            }}
+            min="-3"
+            max="3"
+            step="0.1"
+            value={Math.log10(matchWeight())}
+            onInput={(e) => setMatchWeight(Math.pow(10, parseFloat(e.currentTarget.value)))}
           />
-          <span class="lr-value">{stepsPerSec()}</span>
+          <span class="lr-value">{matchWeight().toPrecision(3)}</span>
         </label>
+
         <label class="lr-control">
-          Δd:
+          freq lr:
+          <input
+            type="range"
+            min="-4"
+            max="0"
+            step="0.1"
+            value={Math.log10(freqLr())}
+            onInput={(e) => setFreqLr(Math.pow(10, parseFloat(e.currentTarget.value)))}
+          />
+          <span class="lr-value">{freqLr().toFixed(4)}</span>
+        </label>
+
+        <label class="lr-control">
+          delta:
           <input
             type="range"
             min="-10"
