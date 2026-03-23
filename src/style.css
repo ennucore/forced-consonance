@@ -415,9 +415,5 @@ h1 {
 
 .dissonance-heatmap canvas {
   display: block;
-  border-radius: 4px;
-  image-rendering: pixelated;
-  width: 400px;
-  height: 400px;
 }
 
