@@ -317,6 +317,38 @@ function initFromTargets(targets: MatchTarget[]) {
   resetAdam();
 }
 
+// Merge peaks closer than 1 semitone: energy-weighted avg frequency, sum energy
+function mergeClosePeaks() {
+  const HALF_STEP = 1 / 12; // 1 semitone in log2 (octaves)
+
+  // Sort by logFreq
+  const indices = Array.from({ length: logFreqs.length }, (_, i) => i);
+  indices.sort((a, b) => logFreqs[a]! - logFreqs[b]!);
+
+  const merged = new Set<number>();
+
+  for (let k = 0; k < indices.length - 1; k++) {
+    const i = indices[k]!;
+    const j = indices[k + 1]!;
+    if (merged.has(i) || merged.has(j)) continue;
+
+    const dist = Math.abs(logFreqs[j]! - logFreqs[i]!);
+    if (dist < HALF_STEP) {
+      const ei = energies[i]!;
+      const ej = energies[j]!;
+      const totalE = ei + ej;
+      if (totalE > ENERGY_FLOOR) {
+        // Energy-weighted average in log-freq space
+        logFreqs[i] = (ei * logFreqs[i]! + ej * logFreqs[j]!) / totalE;
+        energies[i] = totalE;
+      }
+      // Zero out the merged peak
+      energies[j] = 0;
+      merged.add(j);
+    }
+  }
+}
+
 function peaksFromState(): SpectralPeak[] {
   const peaks: SpectralPeak[] = [];
 
@@ -628,9 +660,11 @@ function step() {
 
   for (let i = 0; i < MATCH_STEPS_PER_TICK; i++) {
     matchAdamStep(targets);
+    mergeClosePeaks();
   }
   for (let i = 0; i < DISS_STEPS_PER_TICK; i++) {
     dissAdamStep(targets, desiredDiss);
+    mergeClosePeaks();
   }
   const result = objective(targets, desiredDiss);
   pushHistory(setDissHistory, result.diss);
