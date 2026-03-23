@@ -190,14 +190,26 @@ function transportStep(
   return result;
 }
 
-// Amplitude MSE for display only
-function ampMSE(a: Float64Array, b: Float64Array): number {
-  let mse = 0;
+// KL divergence between energy spectra: KL(P || Q) where P=current, Q=ref
+// Energy = amplitude^2. Both are normalized to distributions with smoothing.
+const KL_EPS = 1e-10;
+
+function energyKL(a: Float64Array, b: Float64Array): number {
+  // Convert to energy (amplitude^2)
+  let sumA = 0, sumB = 0;
   for (let i = 0; i < SPECTRUM_SIZE; i++) {
-    const diff = a[i]! - b[i]!;
-    mse += diff * diff;
+    sumA += a[i]! * a[i]!;
+    sumB += b[i]! * b[i]!;
   }
-  return mse / SPECTRUM_SIZE;
+  if (sumA < KL_EPS || sumB < KL_EPS) return 0;
+
+  let kl = 0;
+  for (let i = 0; i < SPECTRUM_SIZE; i++) {
+    const p = (a[i]! * a[i]!) / sumA + KL_EPS;
+    const q = (b[i]! * b[i]!) / sumB + KL_EPS;
+    kl += p * Math.log(p / q);
+  }
+  return kl;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +300,7 @@ function jointLoss(
   dissWeight: number,
   targetDiss: number
 ): number {
-  return dissWeight * dissLoss(amps, targetDiss) + closenessWeight * ampMSE(amps, ref);
+  return dissWeight * dissLoss(amps, targetDiss) + closenessWeight * energyKL(amps, ref);
 }
 
 function optimizeStepJoint(
@@ -443,7 +455,7 @@ export default function DissonanceMeter() {
       dissValueEl.textContent = d > 0.01 ? d.toFixed(2) : "—";
 
       // Closeness (Wasserstein)
-      const w = ampMSE(spectrum(), referenceSpectrum());
+      const w = energyKL(spectrum(), referenceSpectrum());
       closeHistory.push(w);
       if (closeHistory.length > HISTORY_LEN) closeHistory.shift();
       if (w > closeMax) closeMax = w;
